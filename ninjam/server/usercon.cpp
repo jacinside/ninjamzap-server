@@ -97,6 +97,21 @@ extern void logText(const char *s, ...);
 #define MAX_NICK_LEN 128 // not including null term
 
 #define TRANSFER_TIMEOUT 8
+#define VIDEO_TRANSFER_TIMEOUT 30
+
+// Known video fourcc values (H264, VP8_, MJPG)
+static bool is_video_fourcc(unsigned int fourcc)
+{
+  // fourcc stored little-endian: 'H','2','6','4' -> 0x34363248
+  unsigned char c[4];
+  c[0] = fourcc & 0xff;
+  c[1] = (fourcc >> 8) & 0xff;
+  c[2] = (fourcc >> 16) & 0xff;
+  c[3] = (fourcc >> 24) & 0xff;
+  return (c[0]=='H' && c[1]=='2' && c[2]=='6' && c[3]=='4') ||
+         (c[0]=='V' && c[1]=='P' && c[2]=='8') ||
+         (c[0]=='M' && c[1]=='J' && c[2]=='P' && c[3]=='G');
+}
 
 User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
       m_vote_bpm(0), m_vote_bpm_lasttime(0), m_vote_bpi(0), m_vote_bpi_lasttime(0)
@@ -805,10 +820,13 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                 }
                 break;
               }
-              if (now-t->last_acttime > TRANSFER_TIMEOUT)
               {
-                delete t;
-                m_recvfiles.Delete(x--);
+                int timeout = is_video_fourcc(t->fourcc) ? VIDEO_TRANSFER_TIMEOUT : TRANSFER_TIMEOUT;
+                if (now-t->last_acttime > timeout)
+                {
+                  delete t;
+                  m_recvfiles.Delete(x--);
+                }
               }
             }
 
@@ -835,10 +853,13 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                     }
                     break;
                   }
-                  if (now-t->last_acttime > TRANSFER_TIMEOUT)
                   {
-                    delete t;
-                    u->m_sendfiles.Delete(i--);
+                    int timeout = is_video_fourcc(t->fourcc) ? VIDEO_TRANSFER_TIMEOUT : TRANSFER_TIMEOUT;
+                    if (now-t->last_acttime > timeout)
+                    {
+                      delete t;
+                      u->m_sendfiles.Delete(i--);
+                    }
                   }
                 }
               }

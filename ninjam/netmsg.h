@@ -37,7 +37,11 @@
 
 #define NET_MESSAGE_MAX_SIZE 16384
 
-#define NET_CON_MAX_MESSAGES 512
+// Increased from 512 to support video channel data alongside audio.
+// Video at 300kbps over 16s intervals generates ~37 WRITE messages per
+// stream per interval. With 3 remote video streams that's ~111 video
+// messages plus audio, well within 2048.
+#define NET_CON_MAX_MESSAGES 2048
 
 #define MESSAGE_KEEPALIVE 0xfd
 #define MESSAGE_EXTENDED 0xfe

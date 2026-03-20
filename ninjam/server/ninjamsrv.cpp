@@ -133,6 +133,7 @@ int g_config_maxch_user;
 WDL_String g_config_logpath;
 int g_config_log_sessionlen;
 
+bool g_config_allow_video_channels;
 int g_config_max_users; // these all must be copied to User_Group
 int g_config_keepalive;
 WDL_FastString g_config_motdfile, g_config_private_lobby_motdfile;
@@ -478,6 +479,17 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
     }
     g_config_allow_hidden_users = !!x;
   }
+  else if (!stricmp(t,"AllowVideoChannels"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+
+    int x=lp->gettoken_enum(1,"no\0yes\0");
+    if (x <0)
+    {
+      return -2;
+    }
+    g_config_allow_video_channels=!!x;
+  }
   else if (!stricmp(t,"AnonymousUsers"))
   {
     if (lp->getnumtokens() != 2) return -1;
@@ -590,6 +602,7 @@ static int ReadConfig(char *configfile, bool is_init=false)
   g_default_bpm=120;
 
   g_config_log_sessionlen=10; // ten minute default, tho the user will need to specify the path anyway
+  g_config_allow_video_channels=false;
 
   g_config_max_users=0; // unlimited users
   g_config_motdfile.Set("");
@@ -970,6 +983,7 @@ int main(int argc, char **argv)
     m_group->CreateUserLookup=myCreateUserLookup;
 
     logText("Using defaults %d BPM %d BPI\n",g_default_bpm,g_default_bpi);
+    logText("Video channels: %s\n",g_config_allow_video_channels?"enabled":"disabled");
     m_group->SetConfig(g_default_bpi,g_default_bpm);
 
     m_group->SetLicenseText(g_config_license.Get());
@@ -980,7 +994,8 @@ int main(int argc, char **argv)
 #endif
     while (!g_done)
     {
-      JNL_IConnection *con=m_listener->get_connect(2*65536,65536);
+      // Increased from 128KB send / 64KB recv to support video channel throughput
+      JNL_IConnection *con=m_listener->get_connect(4*65536,2*65536);
       if (con) 
       {
         char str[512];
