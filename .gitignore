@@ -1,0 +1,9 @@
+*.log
+.DS_Store
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+ninjam/server/ninjamsrv
