@@ -33,6 +33,9 @@
 #define _USERCON_H_
 
 
+#include <pthread.h>
+#include <deque>
+
 #include "../netmsg.h"
 #include "../../WDL/wdlstring.h"
 #include "../../WDL/sha.h"
@@ -83,6 +86,10 @@ public:
 
 
 class User_Connection;
+
+struct PendingMigration {
+    User_Connection *con;
+};
 
 class User_Group
 {
@@ -135,6 +142,20 @@ class User_Group
     WDL_FastString m_motdfile;
 
     FILE *m_logfp;
+
+    // Threading — used when running as a private room thread
+    pthread_t m_thread;
+    bool m_thread_running;
+    volatile bool m_thread_stop;
+
+    // Connection handoff (main thread → group thread)
+    pthread_mutex_t m_migration_mutex;
+    std::deque<PendingMigration> m_pending_migrations;
+
+    static void *ThreadFunc(void *arg);
+    void ThreadRun();
+    void ProcessPendingMigrations();
+    void QueueMigration(User_Connection *con);
 
 #ifdef _WIN32
     DWORD m_next_loop_time;
@@ -198,7 +219,7 @@ class User_Connection
     User_Connection(JNL_IConnection *con, User_Group *grp);
     ~User_Connection();
 
-    int Run(User_Group *group, int *wantsleep=0); // returns 1 if disconnected, -1 if error in data. 0 if ok.
+    int Run(User_Group *group, int *wantsleep=0, bool audio_only=false); // returns 1 if disconnected, -1 if error in data. 0 if ok.
     void SendConfigChangeNotify(int bpm, int bpi);
 
     void Send(Net_Message *msg);
@@ -240,6 +261,8 @@ class User_Connection
     WDL_PtrList<User_TransferState> m_sendfiles;
 
     IUserInfoLookup *m_lookup;
+
+    Net_Message *m_deferred_video_msg;  // Video msg deferred to pass 2
 
     bool migrateToRoom(const char *p);
     WDL_FastString m_wants_group_migration; // set from lobby in private group mode

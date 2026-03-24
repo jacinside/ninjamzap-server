@@ -93,11 +93,12 @@ static void type_to_string(unsigned int t, char *out)
 
 
 extern void logText(const char *s, ...);
+extern int g_config_video_transfer_timeout;
+extern int g_config_video_congestion_pct;
 
 #define MAX_NICK_LEN 128 // not including null term
 
 #define TRANSFER_TIMEOUT 8
-#define VIDEO_TRANSFER_TIMEOUT 30
 
 // Known video fourcc values (H264, VP8_, MJPG)
 static bool is_video_fourcc(unsigned int fourcc)
@@ -114,7 +115,8 @@ static bool is_video_fourcc(unsigned int fourcc)
 }
 
 User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
-      m_vote_bpm(0), m_vote_bpm_lasttime(0), m_vote_bpi(0), m_vote_bpi_lasttime(0)
+      m_vote_bpm(0), m_vote_bpm_lasttime(0), m_vote_bpi(0), m_vote_bpi_lasttime(0),
+      m_deferred_video_msg(NULL)
 {
   m_netcon.attach(con);
 
@@ -165,6 +167,12 @@ User_Connection::~User_Connection()
   for (x = 0; x < m_sendfiles.GetSize(); x ++)
     delete m_sendfiles.Get(x);
   m_sendfiles.Empty();
+
+  if (m_deferred_video_msg)
+  {
+    m_deferred_video_msg->releaseRef();
+    m_deferred_video_msg=NULL;
+  }
 
   delete m_lookup;
   m_lookup=0;
@@ -474,7 +482,7 @@ void User_Connection::SendUserList(User_Group *group)
 }
 
 
-int User_Connection::Run(User_Group *group, int *wantsleep)
+int User_Connection::Run(User_Group *group, int *wantsleep, bool audio_only)
 {
   Net_Message *msg=m_netcon.Run(wantsleep);
   if (m_netcon.GetStatus()) 
@@ -703,6 +711,15 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
           mpb_client_upload_interval_begin mp;
           if (!mp.parse(msg) && mp.chidx < m_max_channels)
           {
+            // In audio_only pass, defer video messages to pass 2
+            if (audio_only && is_video_fourcc(mp.fourcc))
+            {
+              msg->addRef();
+              if (m_deferred_video_msg) m_deferred_video_msg->releaseRef();
+              m_deferred_video_msg = msg;
+              msg->releaseRef();
+              return 0;
+            }
             char *myusername=m_username.Get();
 
             mpb_server_download_interval_begin nmb;
@@ -767,6 +784,13 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                   {
                     if (sm->channelmask & (1<<mp.chidx))
                     {
+                      // Skip video for congested subscribers
+                      if (is_video_fourcc(mp.fourcc) &&
+                          u->m_netcon.GetSendQueueCount() > NET_CON_MAX_MESSAGES * g_config_video_congestion_pct / 100)
+                      {
+                        break;
+                      }
+
                       if (memcmp(mp.guid,zero_guid,sizeof(zero_guid))) // zero = silence, so simply rebroadcast
                       {
                         // add entry in send list
@@ -795,6 +819,28 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
           mpb_client_upload_interval_write mp;
           if (!mp.parse(msg))
           {
+            // In audio_only pass, defer video WRITE messages to pass 2
+            if (audio_only)
+            {
+              // Check if this guid belongs to a video transfer
+              for (int rx = 0; rx < m_recvfiles.GetSize(); rx++)
+              {
+                User_TransferState *rt = m_recvfiles.Get(rx);
+                if (!memcmp(rt->guid, mp.guid, sizeof(mp.guid)))
+                {
+                  if (is_video_fourcc(rt->fourcc))
+                  {
+                    msg->addRef();
+                    if (m_deferred_video_msg) m_deferred_video_msg->releaseRef();
+                    m_deferred_video_msg = msg;
+                    msg->releaseRef();
+                    return 0;
+                  }
+                  break;
+                }
+              }
+            }
+
             time_t now;
             time(&now);
             msg->set_type(MESSAGE_SERVER_DOWNLOAD_INTERVAL_WRITE); // we rely on the fact that the upload/download write messages are identical
@@ -821,7 +867,7 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                 break;
               }
               {
-                int timeout = is_video_fourcc(t->fourcc) ? VIDEO_TRANSFER_TIMEOUT : TRANSFER_TIMEOUT;
+                int timeout = is_video_fourcc(t->fourcc) ? g_config_video_transfer_timeout : TRANSFER_TIMEOUT;
                 if (now-t->last_acttime > timeout)
                 {
                   delete t;
@@ -842,6 +888,18 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                   User_TransferState *t=u->m_sendfiles.Get(i);
                   if (t && !memcmp(t->guid,mp.guid,sizeof(t->guid)))
                   {
+                    // Drop video frames for congested subscribers
+                    if (is_video_fourcc(t->fourcc) &&
+                        u->m_netcon.GetSendQueueCount() > NET_CON_MAX_MESSAGES * g_config_video_congestion_pct / 100)
+                    {
+                      t->bytes_sofar += mp.audio_data_len;
+                      if (mp.flags & 1)
+                      {
+                        delete t;
+                        u->m_sendfiles.Delete(i);
+                      }
+                      break;
+                    }
                     t->last_acttime=now;
                     t->bytes_sofar += mp.audio_data_len;
                     u->Send(msg);
@@ -854,7 +912,7 @@ int User_Connection::Run(User_Group *group, int *wantsleep)
                     break;
                   }
                   {
-                    int timeout = is_video_fourcc(t->fourcc) ? VIDEO_TRANSFER_TIMEOUT : TRANSFER_TIMEOUT;
+                    int timeout = is_video_fourcc(t->fourcc) ? g_config_video_transfer_timeout : TRANSFER_TIMEOUT;
                     if (now-t->last_acttime > timeout)
                     {
                       delete t;
@@ -905,18 +963,29 @@ bool User_Connection::migrateToRoom(const char *p)
   return false;
 }
 
-User_Group::User_Group() : m_max_users(0), m_last_bpm(120), m_last_bpi(32), m_keepalive(0), 
+User_Group::User_Group() : m_max_users(0), m_last_bpm(120), m_last_bpi(32), m_keepalive(0),
   m_voting_threshold(110), m_voting_timeout(120),
-  m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_is_lobby_mode(0)
+  m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_is_lobby_mode(0),
+  m_thread_running(false), m_thread_stop(false)
 
 {
   m_logfp = NULL;
   CreateUserLookup=0;
   memset(&m_next_loop_time,0,sizeof(m_next_loop_time));
+  memset(&m_thread,0,sizeof(m_thread));
+  pthread_mutex_init(&m_migration_mutex, NULL);
 }
 
 User_Group::~User_Group()
 {
+  if (m_thread_running)
+  {
+    m_thread_stop = true;
+    pthread_join(m_thread, NULL);
+    m_thread_running = false;
+  }
+  pthread_mutex_destroy(&m_migration_mutex);
+
   int x;
   for (x = 0; x < m_users.GetSize(); x ++)
   {
@@ -1026,17 +1095,19 @@ int User_Group::Run()
     }
 
 
+    // Pass 1: process all messages, deferring video to pass 2 when threaded
+    bool use_two_pass = m_thread_running && !m_is_lobby_mode;
     for (x = 0; x < m_users.GetSize(); x ++)
     {
       int thispos=(x+m_run_robin)%m_users.GetSize();
       User_Connection *p=m_users.Get(thispos);
       if (p)
       {
-        int ret=p->Run(this,&wantsleep);
+        int ret=p->Run(this,&wantsleep,use_two_pass);
         if (ret)
         {
           // broadcast to other users that this user is no longer present
-          if (p->m_auth_state>0) 
+          if (p->m_auth_state>0)
           {
             if (!m_is_lobby_mode || (m_is_lobby_mode&LOBBY_ALLOW_CHAT))
             {
@@ -1083,6 +1154,203 @@ int User_Group::Run()
         }
       }
     }
+
+    // Pass 2: process deferred video messages (lower priority than audio)
+    if (use_two_pass)
+    {
+      for (x = 0; x < m_users.GetSize(); x ++)
+      {
+        User_Connection *p=m_users.Get(x);
+        if (p && p->m_deferred_video_msg)
+        {
+          Net_Message *vmsg = p->m_deferred_video_msg;
+          p->m_deferred_video_msg = NULL;
+          // Re-run with the deferred message — call Run with audio_only=false
+          // The deferred msg was already addRef'd when stashed; we need to
+          // re-inject it. Simplest: just call Run() which will pull from net.
+          // But the msg is already parsed — we replay it by re-processing.
+          // Actually, we re-dispatch via the same path. Since the msg was
+          // already received from the network, we push it back and re-run.
+          // Simpler approach: just call Run(audio_only=false) — it will
+          // process the next network message normally. But the deferred msg
+          // is not on the network anymore. So we process it manually here.
+
+          // The deferred message is a raw Net_Message. We need to re-process
+          // it through User_Connection::Run, but Run() pulls from m_netcon.
+          // Instead, we directly handle it inline here.
+
+          int msg_type = vmsg->get_type();
+          if (msg_type == MESSAGE_CLIENT_UPLOAD_INTERVAL_BEGIN)
+          {
+            // Replay the UPLOAD_INTERVAL_BEGIN handling
+            mpb_client_upload_interval_begin mp2;
+            if (!mp2.parse(vmsg) && mp2.chidx < p->m_max_channels)
+            {
+              char *myusername=p->m_username.Get();
+
+              mpb_server_download_interval_begin nmb;
+              nmb.chidx=mp2.chidx;
+              nmb.estsize=mp2.estsize;
+              nmb.fourcc=mp2.fourcc;
+              memcpy(nmb.guid,mp2.guid,sizeof(nmb.guid));
+              nmb.username = myusername;
+
+              Net_Message *newmsg2=nmb.build();
+              newmsg2->addRef();
+
+              static unsigned char zero_guid2[16];
+
+              if (mp2.fourcc && memcmp(mp2.guid,zero_guid2,sizeof(zero_guid2)))
+              {
+                User_TransferState *newrecv=new User_TransferState;
+                newrecv->bytes_estimated=mp2.estsize;
+                newrecv->fourcc=mp2.fourcc;
+                memcpy(newrecv->guid,mp2.guid,sizeof(newrecv->guid));
+
+                if (m_logdir.Get()[0])
+                {
+                  char fn[512];
+                  char guidstr[64];
+                  guidtostr(mp2.guid,guidstr);
+                  char ext[8];
+                  type_to_string(mp2.fourcc,ext);
+                  sprintf(fn,"%c/%s.%s",guidstr[0],guidstr,ext);
+                  WDL_String tmp(m_logdir.Get());
+                  tmp.Append(fn);
+                  newrecv->fp = fopen(tmp.Get(),"wb");
+                  if (m_logfp)
+                  {
+                    const char *chn="?";
+                    if (mp2.chidx >= 0 && mp2.chidx < MAX_USER_CHANNELS) chn=p->m_channels[mp2.chidx].name.Get();
+                    fprintf(m_logfp,"user %s \"%s\" %d \"%s\"\n",guidstr,myusername,mp2.chidx,chn);
+                  }
+                }
+                p->m_recvfiles.Add(newrecv);
+              }
+
+              int user;
+              for (user=0;user<m_users.GetSize(); user++)
+              {
+                User_Connection *u=m_users.Get(user);
+                if (u && u != p)
+                {
+                  int i;
+                  for (i=0; i < u->m_sublist.GetSize(); i ++)
+                  {
+                    User_SubscribeMask *sm=u->m_sublist.Get(i);
+                    if (!strcasecmp(sm->username.Get(),myusername))
+                    {
+                      if (sm->channelmask & (1<<mp2.chidx))
+                      {
+                        if (is_video_fourcc(mp2.fourcc) &&
+                            u->m_netcon.GetSendQueueCount() > NET_CON_MAX_MESSAGES * g_config_video_congestion_pct / 100)
+                        {
+                          break;
+                        }
+                        if (memcmp(mp2.guid,zero_guid2,sizeof(zero_guid2)))
+                        {
+                          User_TransferState *nt=new User_TransferState;
+                          memcpy(nt->guid,mp2.guid,sizeof(nt->guid));
+                          nt->bytes_estimated = mp2.estsize;
+                          nt->fourcc = mp2.fourcc;
+                          u->m_sendfiles.Add(nt);
+                        }
+                        u->Send(newmsg2);
+                      }
+                      break;
+                    }
+                  }
+                }
+              }
+              newmsg2->releaseRef();
+            }
+          }
+          else if (msg_type == MESSAGE_CLIENT_UPLOAD_INTERVAL_WRITE)
+          {
+            // Replay the UPLOAD_INTERVAL_WRITE handling
+            mpb_client_upload_interval_write mp2;
+            if (!mp2.parse(vmsg))
+            {
+              time_t now;
+              time(&now);
+              vmsg->set_type(MESSAGE_SERVER_DOWNLOAD_INTERVAL_WRITE);
+
+              int user2;
+              for (int rx = 0; rx < p->m_recvfiles.GetSize(); rx++)
+              {
+                User_TransferState *t=p->m_recvfiles.Get(rx);
+                if (!memcmp(t->guid,mp2.guid,sizeof(mp2.guid)))
+                {
+                  t->last_acttime=now;
+                  if (t->fp) fwrite(mp2.audio_data,1,mp2.audio_data_len,t->fp);
+                  t->bytes_sofar+=mp2.audio_data_len;
+                  if (mp2.flags & 1)
+                  {
+                    delete t;
+                    p->m_recvfiles.Delete(rx);
+                  }
+                  break;
+                }
+                {
+                  int timeout = is_video_fourcc(t->fourcc) ? g_config_video_transfer_timeout : TRANSFER_TIMEOUT;
+                  if (now-t->last_acttime > timeout)
+                  {
+                    delete t;
+                    p->m_recvfiles.Delete(rx--);
+                  }
+                }
+              }
+
+              for (user2=0;user2<m_users.GetSize(); user2++)
+              {
+                User_Connection *u=m_users.Get(user2);
+                if (u && u != p)
+                {
+                  int i;
+                  for (i=0; i < u->m_sendfiles.GetSize(); i ++)
+                  {
+                    User_TransferState *t=u->m_sendfiles.Get(i);
+                    if (t && !memcmp(t->guid,mp2.guid,sizeof(t->guid)))
+                    {
+                      if (is_video_fourcc(t->fourcc) &&
+                          u->m_netcon.GetSendQueueCount() > NET_CON_MAX_MESSAGES * g_config_video_congestion_pct / 100)
+                      {
+                        t->bytes_sofar += mp2.audio_data_len;
+                        if (mp2.flags & 1)
+                        {
+                          delete t;
+                          u->m_sendfiles.Delete(i);
+                        }
+                        break;
+                      }
+                      t->last_acttime=now;
+                      t->bytes_sofar += mp2.audio_data_len;
+                      u->Send(vmsg);
+                      if (mp2.flags & 1)
+                      {
+                        delete t;
+                        u->m_sendfiles.Delete(i);
+                      }
+                      break;
+                    }
+                    {
+                      int timeout = is_video_fourcc(t->fourcc) ? g_config_video_transfer_timeout : TRANSFER_TIMEOUT;
+                      if (now-t->last_acttime > timeout)
+                      {
+                        delete t;
+                        u->m_sendfiles.Delete(i--);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          vmsg->releaseRef();
+        }
+      }
+    }
+
     m_run_robin++;
 
     return wantsleep;
@@ -1584,5 +1852,88 @@ void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
     newmsg.parms[1]="";
     newmsg.parms[2]=errormsg;
     con->Send(newmsg.build());
+  }
+}
+
+
+// Threading methods for User_Group
+
+void *User_Group::ThreadFunc(void *arg)
+{
+  User_Group *g = (User_Group *)arg;
+  g->ThreadRun();
+  return NULL;
+}
+
+void User_Group::ThreadRun()
+{
+  while (!m_thread_stop)
+  {
+    ProcessPendingMigrations();
+
+    int can_idle = Run();
+
+    if (can_idle)
+    {
+      struct timespec ts={0, 5*1000*1000}; // 5ms
+      nanosleep(&ts, NULL);
+    }
+  }
+}
+
+void User_Group::QueueMigration(User_Connection *con)
+{
+  pthread_mutex_lock(&m_migration_mutex);
+  PendingMigration pm;
+  pm.con = con;
+  m_pending_migrations.push_back(pm);
+  pthread_mutex_unlock(&m_migration_mutex);
+}
+
+void User_Group::ProcessPendingMigrations()
+{
+  // Drain pending migrations under lock
+  std::deque<PendingMigration> pending;
+  pthread_mutex_lock(&m_migration_mutex);
+  pending.swap(m_pending_migrations);
+  pthread_mutex_unlock(&m_migration_mutex);
+
+  for (size_t i = 0; i < pending.size(); i++)
+  {
+    User_Connection *c = pending[i].con;
+    m_users.Add(c);
+
+    // Notify existing users that this user is joining
+    {
+      mpb_chat_message newmsg;
+      newmsg.parms[0]="JOIN";
+      newmsg.parms[1]=c->m_username.Get();
+      Broadcast(newmsg.build(),c);
+    }
+
+    // Broadcast our channels to existing users
+    {
+      mpb_server_userinfo_change_notify bh;
+      int acnt=0;
+      for (int channel = 0; channel < c->m_max_channels && channel < MAX_USER_CHANNELS; channel++)
+      {
+        if (c->m_channels[channel].active)
+        {
+          bh.build_add_rec(1,channel,c->m_channels[channel].volume,c->m_channels[channel].panning,c->m_channels[channel].flags,
+                            c->m_username.Get(),c->m_channels[channel].name.Get());
+          acnt++;
+        }
+      }
+      if (!acnt && !m_allow_hidden_users && c->m_max_channels && !(c->m_auth_privs & PRIV_HIDDEN))
+      {
+        bh.build_add_rec(1,0,0,0,0,c->m_username.Get(),"");
+      }
+      Broadcast(bh.build(),c);
+    }
+
+    c->SendAuthReply(this);
+    c->SendUserList(this);
+    c->SendMOTDFile(this);
+    c->SendConnectInfo(this);
   }
 }

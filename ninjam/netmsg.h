@@ -133,6 +133,10 @@ class Net_Connection
 
     void Kill(int quick=0);
 
+    int GetSendQueueCount() const {
+      return m_sendq.Available() / (int)sizeof(Net_Message*);
+    }
+
   private:
     int m_error;
 

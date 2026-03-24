@@ -45,6 +45,8 @@
 #include "../mpb.h"
 #include "usercon.h"
 
+#include <pthread.h>
+
 #include "../../WDL/rng.h"
 #include "../../WDL/sha.h"
 #include "../../WDL/lineparse.h"
@@ -67,6 +69,9 @@ WDL_String g_status_pass,g_status_user;
 User_Group *m_group; // used normally, but in privategroup mode, this is a lobby
 static void delGroup(User_Group *g) { delete g; }
 WDL_StringKeyedArray<User_Group *> g_private_groups(false,delGroup);
+
+pthread_mutex_t g_groups_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 JNL_Listen *m_listener;
 void onConfigChange(int argc, char **argv);
@@ -134,6 +139,10 @@ WDL_String g_config_logpath;
 int g_config_log_sessionlen;
 
 bool g_config_allow_video_channels;
+int g_config_video_transfer_timeout;    // seconds before stale video transfer is cleaned up (default 30)
+int g_config_video_congestion_pct;      // % of send queue that triggers video frame dropping (default 50)
+int g_config_send_buffer_kb;            // per-connection send buffer in KB (default 256)
+int g_config_recv_buffer_kb;            // per-connection recv buffer in KB (default 128)
 int g_config_max_users; // these all must be copied to User_Group
 int g_config_keepalive;
 WDL_FastString g_config_motdfile, g_config_private_lobby_motdfile;
@@ -490,6 +499,34 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
     }
     g_config_allow_video_channels=!!x;
   }
+  else if (!stricmp(t,"VideoTransferTimeout"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int v=lp->gettoken_int(1);
+    if (v < 5 || v > 300) return -2;
+    g_config_video_transfer_timeout=v;
+  }
+  else if (!stricmp(t,"VideoCongestionThreshold"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int v=lp->gettoken_int(1);
+    if (v < 10 || v > 95) return -2;
+    g_config_video_congestion_pct=v;
+  }
+  else if (!stricmp(t,"SendBufferKB"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int v=lp->gettoken_int(1);
+    if (v < 64 || v > 4096) return -2;
+    g_config_send_buffer_kb=v;
+  }
+  else if (!stricmp(t,"RecvBufferKB"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    int v=lp->gettoken_int(1);
+    if (v < 32 || v > 2048) return -2;
+    g_config_recv_buffer_kb=v;
+  }
   else if (!stricmp(t,"AnonymousUsers"))
   {
     if (lp->getnumtokens() != 2) return -1;
@@ -603,6 +640,10 @@ static int ReadConfig(char *configfile, bool is_init=false)
 
   g_config_log_sessionlen=10; // ten minute default, tho the user will need to specify the path anyway
   g_config_allow_video_channels=false;
+  g_config_video_transfer_timeout=30;
+  g_config_video_congestion_pct=50;
+  g_config_send_buffer_kb=256;
+  g_config_recv_buffer_kb=128;
 
   g_config_max_users=0; // unlimited users
   g_config_motdfile.Set("");
@@ -738,8 +779,10 @@ void usage()
 
 void logText(const char *s, ...)
 {
-    if (g_logfp) 
-    {      
+    pthread_mutex_lock(&g_log_mutex);
+
+    if (g_logfp)
+    {
       time_t tv;
       time(&tv);
       struct tm *t=localtime(&tv);
@@ -750,11 +793,13 @@ void logText(const char *s, ...)
     va_list ap;
     va_start(ap,s);
 
-    vfprintf(g_logfp?g_logfp:stdout,s,ap);    
+    vfprintf(g_logfp?g_logfp:stdout,s,ap);
 
     if (g_logfp) fflush(g_logfp);
 
     va_end(ap);
+
+    pthread_mutex_unlock(&g_log_mutex);
 }
 
 static void appendGroupUsers(User_Group *group, WDL_FastString &str, int linelen)
@@ -785,6 +830,8 @@ static void appendGroupUsers(User_Group *group, WDL_FastString &str, int linelen
 const char *get_privatemode_stats(int privs, const char *req)
 {
   if (!g_config_private_maxsz) return "";
+
+  pthread_mutex_lock(&g_groups_mutex);
 
   static WDL_FastString str;
   static time_t last_stat_time;
@@ -817,13 +864,13 @@ const char *get_privatemode_stats(int privs, const char *req)
       }
     }
     str.SetFormatted(256,"%d/%d rooms occupied, %d user%s total in rooms, %d user%s in lobby\n",g_private_groups.GetSize(),g_config_private_maxsz,
-        total_cnt,total_cnt==1?"":"s", 
+        total_cnt,total_cnt==1?"":"s",
         lobby_cnt,lobby_cnt==1?"":"s");
     for (x=maxuserchk;x>=0;x--)
     {
-      if (sizes[x]) 
+      if (sizes[x])
         str.AppendFormatted(256,"%d room%s %d%s user%s\n",
-                                sizes[x], sizes[x]==1?" has":"s have", 
+                                sizes[x], sizes[x]==1?" has":"s have",
                                 x, x==maxuserchk?"+":"", x==1?"":"s");
     }
     if (public_cnt > 0)
@@ -835,7 +882,7 @@ const char *get_privatemode_stats(int privs, const char *req)
         User_Group *g = g_private_groups.Enumerate(x,&nm);
         if (WDL_NORMALLY(g))
         {
-          if (nm && g_config_private_publicprefix.GetLength() && 
+          if (nm && g_config_private_publicprefix.GetLength() &&
               !strnicmp(nm,g_config_private_publicprefix.Get(),g_config_private_publicprefix.GetLength()))
           {
             str.AppendFormatted(256,"  %s - %d/%d users, %d BPI %d BPM\n",nm,g->m_users.GetSize(),g->m_max_users,g->m_last_bpi,g->m_last_bpm);
@@ -866,8 +913,10 @@ const char *get_privatemode_stats(int privs, const char *req)
         str2.Append("\n");
       }
     }
+    pthread_mutex_unlock(&g_groups_mutex);
     return str2.Get();
   }
+  pthread_mutex_unlock(&g_groups_mutex);
   return str.Get();
 }
 
@@ -984,6 +1033,12 @@ int main(int argc, char **argv)
 
     logText("Using defaults %d BPM %d BPI\n",g_default_bpm,g_default_bpi);
     logText("Video channels: %s\n",g_config_allow_video_channels?"enabled":"disabled");
+    if (g_config_allow_video_channels)
+    {
+      logText("  Video transfer timeout: %ds, congestion threshold: %d%%, send buffer: %dKB, recv buffer: %dKB\n",
+              g_config_video_transfer_timeout, g_config_video_congestion_pct,
+              g_config_send_buffer_kb, g_config_recv_buffer_kb);
+    }
     m_group->SetConfig(g_default_bpi,g_default_bpm);
 
     m_group->SetLicenseText(g_config_license.Get());
@@ -994,8 +1049,7 @@ int main(int argc, char **argv)
 #endif
     while (!g_done)
     {
-      // Increased from 128KB send / 64KB recv to support video channel throughput
-      JNL_IConnection *con=m_listener->get_connect(4*65536,2*65536);
+      JNL_IConnection *con=m_listener->get_connect(g_config_send_buffer_kb*1024, g_config_recv_buffer_kb*1024);
       if (con) 
       {
         char str[512];
@@ -1024,6 +1078,8 @@ int main(int argc, char **argv)
         User_Connection *c = m_group->m_users.Get(rrchk);
         if (c && c->m_wants_group_migration.GetLength())
         {
+          pthread_mutex_lock(&g_groups_mutex);
+
           User_Group *ng = g_private_groups.Get(c->m_wants_group_migration.Get());
           const char *msg = "[lobby] could not join room, unknown error.";
           if (!ng)
@@ -1033,10 +1089,15 @@ int main(int argc, char **argv)
               logText("PrivateMode - creating room '%s' (%d/%d)\n",c->m_wants_group_migration.Get(),g_private_groups.GetSize()+1,g_config_private_maxsz);
 
               ng = new User_Group;
+              ng->CreateUserLookup=myCreateUserLookup;
               copyConfigToGroup(ng);
               ng->m_topictext.SetFormatted(256,"Private Room - %s",c->m_wants_group_migration.Get());
               ng->SetConfig(g_default_bpi,g_default_bpm);
               g_private_groups.Insert(c->m_wants_group_migration.Get(),ng);
+
+              // Start room thread
+              pthread_create(&ng->m_thread, NULL, User_Group::ThreadFunc, ng);
+              ng->m_thread_running = true;
             }
             else
             {
@@ -1046,9 +1107,16 @@ int main(int argc, char **argv)
           }
           else
           {
-            if (ng->m_users.GetSize() >= ng->m_max_users)
+            // Check capacity — m_users may be modified by room thread, but
+            // we also need to count pending migrations for accurate capacity
+            int current_count = ng->m_users.GetSize();
+            pthread_mutex_lock(&ng->m_migration_mutex);
+            current_count += (int)ng->m_pending_migrations.size();
+            pthread_mutex_unlock(&ng->m_migration_mutex);
+
+            if (current_count >= ng->m_max_users)
             {
-              logText("PrivateMode - cannot join '%s' (%d/%d)\n",c->m_wants_group_migration.Get(),ng->m_users.GetSize(), ng->m_max_users);
+              logText("PrivateMode - cannot join '%s' (%d/%d)\n",c->m_wants_group_migration.Get(),current_count, ng->m_max_users);
               msg = "[lobby] could not join room, room is at capacity!";
               ng = NULL;
             }
@@ -1067,68 +1135,50 @@ int main(int argc, char **argv)
           if (ng)
           {
             m_group->m_users.Delete(rrchk--);
-            ng->m_users.Add(c);
 
-            // notify the lobby we're leaving
+            // Notify the lobby we're leaving
             mpb_chat_message newmsg;
             newmsg.parms[0]="PART";
             newmsg.parms[1]=c->m_username.Get();
             m_group->Broadcast(newmsg.build(),NULL);
 
-            // notify existing users we're joining via chat
-            {
-              mpb_chat_message newmsg;
-              newmsg.parms[0]="JOIN";
-              newmsg.parms[1]=c->m_username.Get();
-              ng->Broadcast(newmsg.build(),c);
-            }
-
-            // broadcast our channels to any existing users
-            {
-              mpb_server_userinfo_change_notify bh;
-
-              int acnt=0;
-              for (int channel = 0; channel < c->m_max_channels && channel < MAX_USER_CHANNELS; channel ++)
-              {
-                if (c->m_channels[channel].active)
-                {
-                  bh.build_add_rec(1,channel,c->m_channels[channel].volume,c->m_channels[channel].panning,c->m_channels[channel].flags,
-                                    c->m_username.Get(),c->m_channels[channel].name.Get());
-                  acnt++;
-                }
-              }
-              if (!acnt && !ng->m_allow_hidden_users && c->m_max_channels && !(c->m_auth_privs & PRIV_HIDDEN)) // give users at least one channel
-              {
-                bh.build_add_rec(1,0,0,0,0,c->m_username.Get(),"");
-              }
-              ng->Broadcast(bh.build(),c);
-            }
-
-            c->SendAuthReply(ng);
-            c->SendUserList(ng);
-            c->SendMOTDFile(ng);
-            c->SendConnectInfo(ng);
+            // Hand off to room thread — it will handle JOIN broadcast,
+            // user list, config, etc. in ProcessPendingMigrations()
+            ng->QueueMigration(c);
           }
 
-
+          pthread_mutex_unlock(&g_groups_mutex);
         }
         rrchk++;
       }
 
-      for (int x = 0; x < g_private_groups.GetSize(); x ++)
+      // Private groups run in their own threads — just check for empty ones to clean up
       {
-        const char *nm=NULL;
-        User_Group *g = g_private_groups.Enumerate(x,&nm);
-        if (WDL_NORMALLY(g))
+        pthread_mutex_lock(&g_groups_mutex);
+        for (int x = 0; x < g_private_groups.GetSize(); x ++)
         {
-          if (!g->Run())
-            can_idle = 0;
-          else if (!g->m_users.GetSize())
+          const char *nm=NULL;
+          User_Group *g = g_private_groups.Enumerate(x,&nm);
+          if (WDL_NORMALLY(g))
           {
-            logText("PrivateMode - disposing empty group '%s' %d/%d\n",nm,x,g_private_groups.GetSize());
-            g_private_groups.DeleteByIndex(x--);
+            // Check if group is empty and has no pending migrations
+            bool has_pending = false;
+            pthread_mutex_lock(&g->m_migration_mutex);
+            has_pending = !g->m_pending_migrations.empty();
+            pthread_mutex_unlock(&g->m_migration_mutex);
+
+            if (!g->m_users.GetSize() && !has_pending)
+            {
+              logText("PrivateMode - disposing empty group '%s' %d/%d\n",nm,x,g_private_groups.GetSize());
+              // Stop thread before deleting (destructor handles join)
+              g->m_thread_stop = true;
+              pthread_join(g->m_thread, NULL);
+              g->m_thread_running = false;
+              g_private_groups.DeleteByIndex(x--);
+            }
           }
         }
+        pthread_mutex_unlock(&g_groups_mutex);
       }
 
       if (can_idle)
@@ -1305,7 +1355,22 @@ int main(int argc, char **argv)
 
   logText("Shutting down server\n");
 
-  g_private_groups.DeleteAll();
+  // Stop all group threads before deleting
+  {
+    pthread_mutex_lock(&g_groups_mutex);
+    for (int x = 0; x < g_private_groups.GetSize(); x++)
+    {
+      User_Group *g = g_private_groups.Enumerate(x, NULL);
+      if (g && g->m_thread_running)
+      {
+        g->m_thread_stop = true;
+        pthread_join(g->m_thread, NULL);
+        g->m_thread_running = false;
+      }
+    }
+    g_private_groups.DeleteAll();
+    pthread_mutex_unlock(&g_groups_mutex);
+  }
   delete m_group;
   delete m_listener;
 
@@ -1328,11 +1393,13 @@ void onConfigChange(int argc, char **argv)
   enforceACL(m_group);
   m_group->SetLicenseText(g_config_license.Get());
 
+  pthread_mutex_lock(&g_groups_mutex);
   for (int x = 0; x < g_private_groups.GetSize(); x ++)
   {
     User_Group *g = g_private_groups.Enumerate(x,NULL);
     if (WDL_NORMALLY(g)) enforceACL(g);
   }
+  pthread_mutex_unlock(&g_groups_mutex);
 
   int p;
   for (p = 2; p < argc; p ++)

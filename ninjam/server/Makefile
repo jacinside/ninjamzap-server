@@ -2,6 +2,7 @@ CFLAGS = -O2 -Wall -Wno-reorder
 
 ifdef MAC
 CFLAGS += -D_MAC
+LDFLAGS += -lpthread
 else
 CFLAGS += -pthread
 endif
@@ -26,7 +27,7 @@ OBJS += ninjamsrv.o
 default: ninjamsrv
 
 ninjamsrv: $(OBJS)
-	$(CXX) $(CXXFLAGS) -s -o ninjamsrv $(OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -s -o ninjamsrv $(OBJS)
 
 clean:
 	-rm $(OBJS) ninjamsrv
