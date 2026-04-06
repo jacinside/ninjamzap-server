@@ -95,6 +95,7 @@ static void type_to_string(unsigned int t, char *out)
 extern void logText(const char *s, ...);
 extern int g_config_video_transfer_timeout;
 extern int g_config_video_congestion_pct;
+extern bool g_config_allow_video_channels;
 
 #define MAX_NICK_LEN 128 // not including null term
 
@@ -132,6 +133,7 @@ User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth
   if (ka < 0)ka=0;
   else if (ka > 255) ka=255;
   ch.server_caps=ka<<8;
+  if (g_config_allow_video_channels) ch.server_caps |= 2; // bit 1 = video supported
 
   if (grp->m_licensetext.Get()[0])
   {
