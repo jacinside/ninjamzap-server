@@ -215,6 +215,54 @@ RecvBufferKB 128   # 32-2048 KB (default: 128)
 
 **When to increase**: If clients are uploading HD video and you see upload stalls.
 
+### `PrivateGroupMode`
+
+Enables the thread-per-group architecture: instead of a single global jam, the server runs a **lobby** plus on-demand **private rooms**, each in its own thread. This is what makes the two-pass audio prioritization and per-room CPU isolation possible (see [Thread-Per-Group Architecture](#thread-per-group-architecture)).
+
+```
+PrivateGroupMode 20       # max simultaneous rooms (>= 1). Unset = disabled.
+```
+
+When **unset**, no threads are created and the server behaves exactly like the original single-threaded NINJAM server — fully backward compatible. When **set**, users connect into the lobby and issue a join command to migrate into (or create) a room.
+
+**For video servers, enabling this is strongly recommended** — without dedicated room threads, video relay shares the main thread with audio and can cause audio glitches under load.
+
+### `PrivateGroupLobbySize`
+
+Maximum number of users allowed to sit in the lobby at once (before they join a room).
+
+```
+PrivateGroupLobbySize 10  # max users in lobby (>= 0, default: 0)
+```
+
+### `PrivateGroupAllowChat`
+
+Controls how users join a room from the lobby.
+
+```
+PrivateGroupAllowChat yes  # yes | no (default: no)
+```
+
+- **`yes`** — lobby chat works; users join a room with `!join <roomname>`.
+- **`no`** — lobby chat is disabled; any string that doesn't begin with `!` and contains no spaces is treated as a room name to join.
+
+### `PrivateGroupPublicPrefix`
+
+Rooms whose name starts with this prefix are **publicly listed**; all others are unlisted (private).
+
+```
+PrivateGroupPublicPrefix "#"   # e.g. '#' — only '#room' names are listed
+PrivateGroupPublicPrefix ""    # empty (default) — all rooms are private
+```
+
+### `PrivateGroupLobbyMOTDFile`
+
+Path to a message-of-the-day file shown to users while they are in the lobby.
+
+```
+PrivateGroupLobbyMOTDFile motdlobby.txt
+```
+
 ## Sizing Guide
 
 ### Bandwidth Estimation
