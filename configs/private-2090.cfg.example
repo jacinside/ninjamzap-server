@@ -1,0 +1,89 @@
+# Private room — invite only.
+# Lives on port 2090 (reserved range 2080+ for private servers, 2049–2079
+# for public). Backed by the same ninjamsrv binary and Fly machine as the
+# public 2049 / 2050 rooms; isolated only by credentials + the backend
+# refusing to advertise this port in `/server-list`.
+
+Port 2090
+
+MaxUsers 8
+MaxChannels 32 8
+
+ServerLicense cclicense.txt
+
+# Same status user/pass as the public rooms so the backend's health
+# probes don't need a separate code path. Status-only — no privileges.
+StatusUserPass ninjamzap-status nzstatus2026
+
+# ❌ Anonymous denied. Only the User lines below can connect. Anyone
+# without a valid invite token resolution gets bounced at auth time.
+AnonymousUsers no
+
+# Lets us run a hidden monitor/bot if we want without taking a slot.
+AllowHiddenUsers yes
+
+AllowVideoChannels yes
+SendBufferKB 4096
+RecvBufferKB 2048
+
+# No private-network ACL — Fly already firewalls the box and we want
+# invited users from anywhere to be able to reach us.
+ACL 0.0.0.0/0 allow
+
+DefaultTopic "NinjamZap Private — invite-only room. Be kind to your bandmates."
+DefaultBPM 120
+DefaultBPI 16
+
+MOTDFile /opt/ninjam/motd-private.txt
+
+SetVotingThreshold 50
+SetVotingVoteTimeout 60
+
+# ─── Users (privileges) ────────────────────────────────────────────────
+#
+# Flag legend (cfg letter → PRIV_* bit, see ninjam/server/usercon.h):
+#   *  = everything except H (admin)
+#   T  = topic
+#   C  = chat
+#   B  = BPM/BPI
+#   K  = kick
+#   R  = reserved slot (never bumped by "server full")
+#   M  = multi-login (same user from multiple devices)
+#   H  = hidden (doesn't appear in user list, doesn't count for slot)
+#   V  = vote (default)
+#   P  = show private rooms (only relevant in PrivateGroupMode)
+#
+# Bootstrap admin. The entrypoint substitutes ${PRIVATE_ADMIN_USER}
+# and ${PRIVATE_ADMIN_PASS} (from Fly secrets) when generating the real
+# private-2090.cfg from this template at container startup. The real
+# cfg with credentials is gitignored — only this template lives in the
+# public repo.
+User ${PRIVATE_ADMIN_USER} ${PRIVATE_ADMIN_PASS} *
+
+# ─── Shared room password (NinjamZap extension) ────────────────────────
+#
+# RoomPassword <password> [flags]
+#
+# Anyone connecting with their own chosen nickname + this password is
+# authenticated and granted the listed privileges. Powers the invite
+# link flow: the operator publishes one secret in invitation emails
+# (`https://ninjamzap.com/invite/<token>` redeems to it), invitees
+# pick their own nickname when the app opens, the password is filled
+# from the link.
+#
+# - Privs default to "CV" (chat + vote) — same as a no-flags `User`.
+# - PRIV_HIDDEN ('H') is rejected by the parser here for security.
+# - Rotate by updating the ROOM_INVITE_PASS Fly secret and redeploying
+#   (or by re-rendering this template and SIGHUP-ing the server).
+# - Empty / missing == feature disabled, behaviour matches vanilla NINJAM.
+#
+# Substituted at startup by the entrypoint from a Fly secret.
+RoomPassword ${ROOM_INVITE_PASS} CV
+
+# Co-host with bpm/topic/kick rights, no admin.
+# User bernd CHANGE_ME CBTK
+#
+# Invite-redeemed users get one-off accounts written here by the backend
+# at provisioning time (or, eventually, by a SIGHUP-reload helper). Each
+# token redemption inserts a `User <random> <random_pass>` line with
+# default privs (chat + vote) and reloads the cfg.

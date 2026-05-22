@@ -25,10 +25,29 @@ primary_region = 'dfw'
     port = 2050
     handlers = []
 
+# Private (invite-only) server. AnonymousUsers no — admin + invite-issued
+# users only. Reserved range 2080+; public servers stay in 2049–2079.
+# Credentials live in Fly secrets: PRIVATE_ADMIN_USER, PRIVATE_ADMIN_PASS.
+# Set them with `fly secrets set PRIVATE_ADMIN_USER=... PRIVATE_ADMIN_PASS=...
+# -a ninjamzap-server` before the next deploy.
+[[services]]
+  internal_port = 2090
+  protocol = 'tcp'
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 2090
+    handlers = []
+
 # No health checks — NINJAM server treats health check TCP probes
 # as failed client connections, causing unnecessary log noise
 
 [[vm]]
-  memory = '256mb'
+  # Bumped from 256mb to 1024mb to comfortably host three ninjamsrv
+  # instances (2049 public, 2050 public, 2090 invite-only private)
+  # under worst-case load (7 users × 3 servers + video relay).
+  memory = '1024mb'
   cpu_kind = 'shared'
   cpus = 1

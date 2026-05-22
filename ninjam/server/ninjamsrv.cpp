@@ -135,6 +135,17 @@ bool g_config_allowanonymous_multi;
 bool g_config_anonymous_mask_ip;
 int g_config_maxch_anon;
 int g_config_maxch_user;
+
+// NinjamZap extension: shared "room password". When set, any client that
+// supplies this password is authenticated regardless of their username,
+// and receives the default privilege set (CHATSEND | VOTE) — the same
+// privs a no-flags `User <name> <pass>` line grants. Intended for the
+// invite-only room model: the operator publishes one room password,
+// invitees connect with their own chosen nickname, single secret can be
+// rotated by changing the cfg and SIGHUP-reloading. Empty == disabled
+// (the default behaviour, no impact on vanilla NINJAM auth).
+WDL_FastString g_config_room_password;
+unsigned int g_config_room_password_privs = PRIV_CHATSEND | PRIV_VOTE;
 WDL_String g_config_logpath;
 int g_config_log_sessionlen;
 
@@ -274,10 +285,51 @@ public:
 
           shatmp.result(sha1buf_user);
 
-          privs=g_userlist.Get(x)->priv_flag; 
+          privs=g_userlist.Get(x)->priv_flag;
           max_channels=g_config_maxch_user;
           break;
         }
+      }
+
+      // NinjamZap extension — RoomPassword fallback.
+      //
+      // If the username didn't match any explicit `User <name>` entry
+      // (and isn't the StatusUserPass username), AND `RoomPassword` is
+      // configured, fall back to "shared room password" auth: the
+      // client supplies their own chosen nickname plus the room password
+      // and gets default privileges. This is what powers invite links
+      // for private rooms — see `g_config_room_password` for the
+      // motivation.
+      //
+      // Security model:
+      //   - The handshake hash is SHA1(username + ":" + room_password),
+      //     same construction NINJAM uses for per-user auth. The plaintext
+      //     password never crosses the wire.
+      //   - Explicit `User` entries take precedence (the loop above
+      //     short-circuits via `break`), so a malicious client cannot
+      //     impersonate an admin by guessing their nickname.
+      //   - The username arrives unsanitised here; we don't enforce a
+      //     blacklist (NINJAM itself trims length and rejects empty
+      //     names downstream). If two clients pick the same name, the
+      //     server appends "-2", "-3" etc as it already does.
+      //   - `PRIV_HIDDEN` is rejected at config-parse time, so a shared
+      //     password can never grant hidden-user status.
+      if (!user_valid && g_config_room_password.GetLength() > 0)
+      {
+        user_valid = 1;
+        reqpass = 1;
+
+        WDL_SHA1 shatmp;
+        shatmp.add(username.Get(), strlen(username.Get()));
+        shatmp.add(":", 1);
+        shatmp.add(g_config_room_password.Get(), strlen(g_config_room_password.Get()));
+        shatmp.result(sha1buf_user);
+
+        privs = g_config_room_password_privs;
+        max_channels = g_config_maxch_user;
+
+        logText("got RoomPassword login request for nickname '%s' (auth fallback, default privs)\n",
+                username.Get());
       }
     }
 
@@ -307,6 +359,51 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
     if (lp->getnumtokens() != 3) return -1;
     g_status_user.Set(lp->gettoken_str(1));
     g_status_pass.Set(lp->gettoken_str(2));
+  }
+  else if (!stricmp(t,"RoomPassword"))
+  {
+    // NinjamZap extension: shared room password — see `g_config_room_password`.
+    // Syntax: `RoomPassword <password> [flags]`
+    //   <password>  shared secret; clients send their own nickname + this
+    //               password to be authenticated as a regular user. Empty
+    //               or unset means "feature disabled" (NINJAM auth is
+    //               unchanged from upstream).
+    //   [flags]     optional. Same letter syntax as `User <name> <pass>
+    //               <flags>`. Defaults to "CV" (chat + vote) — the same
+    //               privileges a no-flags `User` entry receives.
+    if (lp->getnumtokens() != 2 && lp->getnumtokens() != 3) return -1;
+    g_config_room_password.Set(lp->gettoken_str(1));
+    if (lp->getnumtokens() == 3)
+    {
+      unsigned int f = 0;
+      const char *ptr = lp->gettoken_str(2);
+      while (*ptr)
+      {
+        if (*ptr == '*') f |= ~PRIV_HIDDEN;
+        else if (*ptr == 'T' || *ptr == 't') f |= PRIV_TOPIC;
+        else if (*ptr == 'B' || *ptr == 'b') f |= PRIV_BPM;
+        else if (*ptr == 'C' || *ptr == 'c') f |= PRIV_CHATSEND;
+        else if (*ptr == 'K' || *ptr == 'k') f |= PRIV_KICK;
+        else if (*ptr == 'R' || *ptr == 'r') f |= PRIV_RESERVE;
+        else if (*ptr == 'M' || *ptr == 'm') f |= PRIV_ALLOWMULTI;
+        else if (*ptr == 'V' || *ptr == 'v') f |= PRIV_VOTE;
+        else if (*ptr == 'P' || *ptr == 'p') f |= PRIV_SHOW_PRIVATE;
+        // PRIV_HIDDEN intentionally NOT accepted here — a shared room
+        // password granting hidden status would let any invitee hide
+        // themselves, which defeats the user-list utility for everyone.
+        else
+        {
+          if (g_logfp) logText("Warning: Unknown RoomPassword priv flag '%c'\n",*ptr);
+          printf("Warning: Unknown RoomPassword priv flag '%c'\n",*ptr);
+        }
+        ptr++;
+      }
+      g_config_room_password_privs = f;
+    }
+    else
+    {
+      g_config_room_password_privs = PRIV_CHATSEND | PRIV_VOTE;
+    }
   }
   else if (!stricmp(t,"MaxUsers"))
   {

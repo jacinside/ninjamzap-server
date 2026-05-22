@@ -7,3 +7,9 @@
 *.so
 *.dylib
 ninjam/server/ninjamsrv
+
+# Real private-server configs — expanded from a `.cfg.example` template
+# at container startup using Fly secrets. Never commit credentials to
+# this public repo. Only the templates live here.
+configs/private-*.cfg
+!configs/private-*.cfg.example

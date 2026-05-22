@@ -136,6 +136,39 @@ A few things worth knowing if you go this route:
 
 A working `fly.toml` template is in this repo.
 
+### Private (invite-only) servers
+
+The bundled `entrypoint.sh` also runs a third instance on **port 2090** configured for invite-only access (`AnonymousUsers no`). The config is generated at container startup from `configs/private-2090.cfg.example` with credentials pulled from Fly secrets, so the public repo never carries a real password.
+
+```bash
+flyctl secrets set \
+  PRIVATE_ADMIN_USER=jacinside \
+  PRIVATE_ADMIN_PASS='use-a-long-random-passphrase' \
+  ROOM_INVITE_PASS='another-long-random-passphrase' \
+  -a ninjamzap-server
+flyctl deploy
+```
+
+The generated `private-2090.cfg` lives only inside the running container (the path is `configs/private-*.cfg`, gitignored). To rotate any password, update the secret and redeploy.
+
+### Shared room password (NinjamZap extension)
+
+This fork adds a new cfg directive — `RoomPassword <password> [flags]` — that powers the invite-link flow without forcing the operator to provision a `User` entry per invitee. When set, any client that supplies their own nickname + this password is authenticated and granted the listed privileges (default: chat + vote).
+
+```cfg
+RoomPassword s3cr3t-abc-xyz CV
+```
+
+The handshake hashes `SHA1(nickname + ":" + room_password)` — same construction as a per-user login, so the secret never crosses the wire in cleartext. Explicit `User` entries take precedence, so admins keep their elevated privileges even if their nickname is the same as a guest's.
+
+This is what makes invite links like `https://ninjamzap.com/invite/<token>` self-contained: the redeem endpoint hands back `{ host, port, password }` and the app prompts the user only for their preferred nickname.
+
+`PRIV_HIDDEN` (`H`) is intentionally rejected at config-parse time — a shared password granting hidden-user status would defeat the user-list utility for everyone in the room.
+
+Port allocation convention:
+- `2049–2079` — public servers
+- `2080+` — private / invite-only
+
 ---
 
 ## Connect
