@@ -8,28 +8,41 @@
 #   2050 — public secondary
 #   2090 — private (invite-only, AnonymousUsers no)
 #
-# The private config is rendered from a committed template + Fly secrets
-# at startup. The .cfg with credentials never lands in the public repo.
+# All configs are rendered from committed templates + Fly secrets at
+# startup. The rendered .cfg files with credentials never land in the
+# public repo.
 
 set -e
 
 cd /opt/ninjam
 
-# ─── Render private-2090.cfg from template + Fly secrets ───────────────
-if [ -f private-2090.cfg.example ]; then
-    : "${PRIVATE_ADMIN_USER:?PRIVATE_ADMIN_USER not set — run \`fly secrets set\` before deploy}"
-    : "${PRIVATE_ADMIN_PASS:?PRIVATE_ADMIN_PASS not set — run \`fly secrets set\` before deploy}"
-    : "${ROOM_INVITE_PASS:?ROOM_INVITE_PASS not set — run \`fly secrets set\` before deploy}"
+# ─── Required secrets ───────────────────────────────────────────────────
+: "${STATUS_USER:?STATUS_USER not set — run \`fly secrets set\` before deploy}"
+: "${STATUS_PASS:?STATUS_PASS not set — run \`fly secrets set\` before deploy}"
+: "${BOT_PASS:?BOT_PASS not set — run \`fly secrets set\` before deploy}"
+: "${PRIVATE_ADMIN_USER:?PRIVATE_ADMIN_USER not set — run \`fly secrets set\` before deploy}"
+: "${PRIVATE_ADMIN_PASS:?PRIVATE_ADMIN_PASS not set — run \`fly secrets set\` before deploy}"
+: "${ROOM_INVITE_PASS:?ROOM_INVITE_PASS not set — run \`fly secrets set\` before deploy}"
 
-    # Strict substitution — only replace the variables we expect, so
-    # `$` characters anywhere else in the template stay literal.
+# Strict substitution — only replace the variables we expect, so `$`
+# characters anywhere else in the templates stay literal.
+render_cfg() {
+    src=$1
+    dst=$2
     sed \
+        -e "s|\${STATUS_USER}|${STATUS_USER}|g" \
+        -e "s|\${STATUS_PASS}|${STATUS_PASS}|g" \
+        -e "s|\${BOT_PASS}|${BOT_PASS}|g" \
         -e "s|\${PRIVATE_ADMIN_USER}|${PRIVATE_ADMIN_USER}|g" \
         -e "s|\${PRIVATE_ADMIN_PASS}|${PRIVATE_ADMIN_PASS}|g" \
         -e "s|\${ROOM_INVITE_PASS}|${ROOM_INVITE_PASS}|g" \
-        private-2090.cfg.example > private-2090.cfg
-    chmod 600 private-2090.cfg
-fi
+        "$src" > "$dst"
+    chmod 600 "$dst"
+}
+
+render_cfg server.cfg.tpl       server.cfg
+render_cfg server-2050.cfg.tpl  server-2050.cfg
+render_cfg private-2090.cfg.tpl private-2090.cfg
 
 stdbuf -oL ninjamsrv server.cfg &
 PID_2049=$!

@@ -6,14 +6,15 @@
 
 Port 2090
 
-MaxUsers 8
+MaxUsers 6
 MaxChannels 32 8
 
 ServerLicense cclicense.txt
 
 # Same status user/pass as the public rooms so the backend's health
 # probes don't need a separate code path. Status-only — no privileges.
-StatusUserPass ninjamzap-status nzstatus2026
+# Rendered from Fly secrets at container startup.
+StatusUserPass ${STATUS_USER} ${STATUS_PASS}
 
 # ❌ Anonymous denied. Only the User lines below can connect. Anyone
 # without a valid invite token resolution gets bounced at auth time.
@@ -82,6 +83,15 @@ RoomPassword ${ROOM_INVITE_PASS} CV
 
 # Co-host with bpm/topic/kick rights, no admin.
 # User bernd CHANGE_ME CBTK
+
+# ─── Optional: audio-relay / recording bot ─────────────────────────────
+#
+# Uncomment to let the ninjamzapbot join this room. Same flag set as the
+# public rooms (CH = chat + hidden, no vote, no moderation). Uses the
+# same BOT_PASS Fly secret as the public rooms — the bot only needs one
+# password to reach any NinjamZap server.
+#
+# User ninjamzapbot ${BOT_PASS} CH
 #
 # Invite-redeemed users get one-off accounts written here by the backend
 # at provisioning time (or, eventually, by a SIGHUP-reload helper). Each

@@ -122,12 +122,22 @@ container startup by `configs/entrypoint.sh`:
 
 ```bash
 flyctl secrets set \
+  STATUS_USER=ninjamzap-status \
+  STATUS_PASS=<long-random> \
+  BOT_PASS=<long-random> \
   PRIVATE_ADMIN_USER=admin \
   PRIVATE_ADMIN_PASS=<long-random> \
   ROOM_INVITE_PASS=<word-style> \
   -a ninjamzap-server
 flyctl deploy -a ninjamzap-server
 ```
+
+All six secrets are required — `entrypoint.sh` errors out fast if any
+is missing. The same `STATUS_USER` / `STATUS_PASS` pair is used across
+all three rooms (the `hs-backend` status probe only needs one
+credential). `BOT_PASS` is consumed by the public 2049/2050 rooms (the
+bot connects with flag `CH` — chat + hidden) and optionally by 2090
+(commented-out by default in the template).
 
 Order matters: `flyctl secrets set` alone restarts the machines with
 the *current* image. If the current image doesn't yet have the
