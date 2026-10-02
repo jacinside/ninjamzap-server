@@ -1,0 +1,73 @@
+# Shared private-room server — token-addressed, dynamically allocated rooms.
+#
+# Unlike private-2090 (one fixed room per port, gated by a shared password),
+# this instance hosts MANY rooms at once inside a single process: users land in
+# a lobby and join a room by sending its code, and the server creates the room
+# on demand and disposes it the moment it empties. Adding a room no longer means
+# adding a port, a template, a service block and a redeploy.
+#
+# Access control is the room code itself: codes are HMAC-signed (see
+# PrivateGroupTokenSecret), so only the holder of the secret can mint a name
+# that creates a room, and room names are never listed to ordinary users.
+
+Port 2091
+
+# Per-ROOM limits (the lobby has its own cap, see PrivateGroupLobbySize).
+MaxUsers 8
+MaxChannels 32 8
+
+ServerLicense cclicense.txt
+
+# Same status credentials as every other instance so the backend's health
+# probe needs no special case.
+StatusUserPass ${STATUS_USER} ${STATUS_PASS}
+
+# Anyone may reach the LOBBY; privacy comes from the room code, not from the
+# front door. A lobby occupant can see only aggregate counts — never the name
+# of a room they haven't been given — and cannot invent a name to occupy a slot,
+# because unsigned names are refused (PrivateGroupTokenSecret below).
+AnonymousUsers yes
+
+AllowHiddenUsers yes
+AllowVideoChannels yes
+SendBufferKB 4096
+RecvBufferKB 2048
+
+# Fly already firewalls the box, and invited users come from anywhere.
+ACL 0.0.0.0/0 allow
+
+DefaultTopic "NinjamZap private room"
+DefaultBPM 120
+DefaultBPI 16
+MOTDFile /opt/ninjam/motd-private.txt
+
+SetVotingThreshold 50
+SetVotingVoteTimeout 60
+
+# ─── Multi-room mode ────────────────────────────────────────────────────
+# Number of rooms that may exist at once. Rooms are created on demand and
+# disposed as soon as they empty, so this is a concurrency ceiling, not a
+# count of provisioned rooms.
+PrivateGroupMode 8
+
+# Users waiting in the lobby before they join a room.
+PrivateGroupLobbySize 20
+
+# `no` keeps the lobby silent: there is no public chat surface, and any line a
+# client sends is read as the room code it wants to join.
+PrivateGroupAllowChat no
+
+# Empty prefix ⇒ every room is unlisted. Room names are never advertised.
+PrivateGroupPublicPrefix ""
+
+# ─── Signed room codes ──────────────────────────────────────────────────
+# Room names must be 8-character Crockford Base32 codes carrying a truncated
+# HMAC-SHA1 of their own payload. Without this, any lobby occupant could invent
+# names and occupy all the slots. Verification is stateless — the server never
+# talks to whatever issues the codes.
+PrivateGroupTokenSecret ${ROOM_TOKEN_SECRET}
+
+# Well-formed but wrongly signed codes tolerated per connection before we stop
+# serving it (forcing a reconnect). This rate limit is what keeps the short
+# signature out of brute-force range. Ordinary chat doesn't count against it.
+PrivateGroupTokenMaxFail 5

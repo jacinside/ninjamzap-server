@@ -41,6 +41,20 @@ primary_region = 'dfw'
     port = 2090
     handlers = []
 
+# Shared private-room server: many token-addressed rooms inside one process,
+# created on demand and disposed when empty. Room codes are HMAC-signed with
+# the ROOM_TOKEN_SECRET Fly secret.
+[[services]]
+  internal_port = 2091
+  protocol = 'tcp'
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 2091
+    handlers = []
+
 # No health checks — NINJAM server treats health check TCP probes
 # as failed client connections, causing unnecessary log noise
 
