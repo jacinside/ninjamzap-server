@@ -246,6 +246,37 @@ PrivateGroupAllowChat yes  # yes | no (default: no)
 - **`yes`** — lobby chat works; users join a room with `!join <roomname>`.
 - **`no`** — lobby chat is disabled; any string that doesn't begin with `!` and contains no spaces is treated as a room name to join.
 
+### `PrivateGroupTokenSecret`
+
+Requires room names to be **signed tokens**. When set, a name must be an 8-character
+[Crockford Base32](https://www.crockford.com/base32.html) code whose last 3 characters are
+a truncated `HMAC-SHA1` of the first 5, keyed with this secret. Names that don't verify are
+refused — so only whoever holds the secret (typically the service that issues invites) can
+mint names that create rooms, and lobby occupants can't invent names to occupy room slots.
+
+```
+PrivateGroupTokenSecret my-shared-secret   # empty (default) — any name accepted
+```
+
+Verification is stateless: the server needs no connection to whatever issues the tokens.
+Codes are case-insensitive and dashes are ignored, so `K7QM-2XA9` and `k7qm2xa9` resolve to
+the same room. Empty or unset keeps the original behaviour (any name is accepted), so this
+is fully backward compatible.
+
+### `PrivateGroupTokenMaxFail`
+
+How many **well-formed but incorrectly signed** codes a single connection may send before
+the server stops honouring its join requests, forcing a reconnect. This rate limit is what
+keeps the short 3-character signature out of brute-force range.
+
+```
+PrivateGroupTokenMaxFail 5   # >= 1 (default: 5)
+```
+
+Input that isn't shaped like a code at all (ordinary chat typed by a client that doesn't
+know about rooms) is rejected with a hint and does **not** count against this limit.
+Only applies when `PrivateGroupTokenSecret` is set.
+
 ### `PrivateGroupPublicPrefix`
 
 Rooms whose name starts with this prefix are **publicly listed**; all others are unlisted (private).

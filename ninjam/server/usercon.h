@@ -266,6 +266,11 @@ class User_Connection
 
     bool migrateToRoom(const char *p);
     WDL_FastString m_wants_group_migration; // set from lobby in private group mode
+    // NinjamZap: invalid signed room tokens seen on this connection. Once it
+    // hits PrivateGroupTokenMaxFail we stop honouring migration requests, so a
+    // brute-forcer has to reconnect — that rate limit is what keeps the short
+    // 3-char MAC out of reach. Reset implicitly by reconnecting.
+    int m_bad_token_count;
 };
 
 

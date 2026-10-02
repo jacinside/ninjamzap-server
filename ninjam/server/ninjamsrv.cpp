@@ -146,6 +146,86 @@ int g_config_maxch_user;
 // (the default behaviour, no impact on vanilla NINJAM auth).
 WDL_FastString g_config_room_password;
 unsigned int g_config_room_password_privs = PRIV_CHATSEND | PRIV_VOTE;
+
+// NinjamZap extension: signed room tokens (PrivateGroupMode only).
+// When set, a room name must be an 8-character Crockford Base32 token carrying a
+// truncated HMAC-SHA1 of its own payload. The server refuses to create or join any
+// room whose name doesn't verify, so only the backend — which holds the secret —
+// can mint room names. Without this, any lobby user can invent names and squat the
+// room slots. Empty == disabled (legacy behaviour: any name is accepted).
+WDL_FastString g_config_private_token_secret;
+// Invalid tokens tolerated per connection before we stop honouring its migration
+// requests. Forcing a reconnect is what keeps the short 3-char MAC (32k values)
+// out of brute-force range; without it a client could try names back-to-back.
+int g_config_private_token_maxfail = 5;
+
+#define NZ_TOKEN_LEN    8
+#define NZ_TOKEN_MACLEN 3
+// Crockford Base32 — no I, L, O or U, so a human can transcribe a code off a
+// napkin without 0/O or 1/l ambiguity.
+static const char *nz_crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+// Normalise a user-supplied code into its canonical token: dashes are grouping
+// sugar, case is irrelevant, and Crockford reads O as 0 and I/L as 1. Writing the
+// canonical form back as the room key matters — otherwise "K7QM-2XA9" and
+// "k7qm2xa9" would be two different rooms. Returns false if it isn't a token.
+static bool nzNormalizeToken(const char *in, char *out /* NZ_TOKEN_LEN+1 */)
+{
+  int n = 0;
+  while (*in)
+  {
+    char c = *in++;
+    if (c == '-') continue;
+    if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
+    if (c == 'O') c = '0';
+    else if (c == 'I' || c == 'L') c = '1';
+    if (!strchr(nz_crockford, c)) return false;
+    if (n >= NZ_TOKEN_LEN) return false;
+    out[n++] = c;
+  }
+  out[n] = 0;
+  return n == NZ_TOKEN_LEN;
+}
+
+static void nzHmacSha1(const char *key, const void *msg, int msglen, unsigned char *out /* WDL_SHA1SIZE */)
+{
+  unsigned char k[64];
+  memset(k, 0, sizeof(k));
+  const int klen = (int) strlen(key);
+  if (klen > (int) sizeof(k))
+  {
+    WDL_SHA1 s; s.add(key, klen); s.result(k);
+  }
+  else memcpy(k, key, klen);
+
+  unsigned char ipad[64], opad[64];
+  for (int i = 0; i < 64; i++) { ipad[i] = k[i] ^ 0x36; opad[i] = k[i] ^ 0x5c; }
+
+  unsigned char inner[WDL_SHA1SIZE];
+  { WDL_SHA1 s; s.add(ipad, 64); s.add(msg, msglen); s.result(inner); }
+  { WDL_SHA1 s; s.add(opad, 64); s.add(inner, WDL_SHA1SIZE); s.result(out); }
+}
+
+// token = <5 payload chars><3 MAC chars>, MAC = HMAC-SHA1(secret, payload)
+// truncated to 15 bits and Crockford-encoded. On success `out` receives the
+// canonical token to use as the room key.
+static bool nzVerifyRoomToken(const char *name, char *out /* NZ_TOKEN_LEN+1 */)
+{
+  if (!nzNormalizeToken(name, out)) return false;
+
+  const int paylen = NZ_TOKEN_LEN - NZ_TOKEN_MACLEN;
+  unsigned char mac[WDL_SHA1SIZE];
+  nzHmacSha1(g_config_private_token_secret.Get(), out, paylen, mac);
+
+  unsigned int bits = ((unsigned int) mac[0] << 8) | mac[1];
+  char want[NZ_TOKEN_MACLEN + 1];
+  for (int i = NZ_TOKEN_MACLEN - 1; i >= 0; i--) { want[i] = nz_crockford[bits & 31]; bits >>= 5; }
+  want[NZ_TOKEN_MACLEN] = 0;
+
+  int diff = 0; // compare without an early-out, so timing doesn't leak the MAC
+  for (int i = 0; i < NZ_TOKEN_MACLEN; i++) diff |= (out[paylen + i] ^ want[i]);
+  return diff == 0;
+}
 WDL_String g_config_logpath;
 int g_config_log_sessionlen;
 
@@ -705,6 +785,17 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
     if (lp->getnumtokens() != 2) return -1;
     g_config_private_lobby_motdfile.Set(lp->gettoken_str(1));
   }
+  else if (!stricmp(t,"PrivateGroupTokenSecret"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    g_config_private_token_secret.Set(lp->gettoken_str(1));
+  }
+  else if (!stricmp(t,"PrivateGroupTokenMaxFail"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    g_config_private_token_maxfail = lp->gettoken_int(1);
+    if (g_config_private_token_maxfail < 1) return -2;
+  }
   else return -3;
   return 0;
 
@@ -1175,6 +1266,54 @@ int main(int argc, char **argv)
         User_Connection *c = m_group->m_users.Get(rrchk);
         if (c && c->m_wants_group_migration.GetLength())
         {
+          // NinjamZap signed-token gate. Only a name carrying a valid HMAC may
+          // create or join a room, so a lobby user can't invent names and squat
+          // the slots. After PrivateGroupTokenMaxFail bad codes we stop serving
+          // this connection — it must reconnect, and that forced round-trip is
+          // what keeps the short 3-char MAC out of brute-force range.
+          // Disabled (legacy: any name accepted) when no secret is configured.
+          const char *reject = NULL;
+          if (g_config_private_token_secret.GetLength())
+          {
+            char tok[NZ_TOKEN_LEN + 1];
+            if (c->m_bad_token_count >= g_config_private_token_maxfail)
+            {
+              reject = "[lobby] too many invalid codes — reconnect to try again.";
+            }
+            else if (!nzNormalizeToken(c->m_wants_group_migration.Get(), tok))
+            {
+              // Not even shaped like a code. With lobby chat disabled every line a
+              // user types lands here, so a legacy client (Reaper, Jamtaba) saying
+              // "hello" must not burn its attempts — only well-formed codes count
+              // as forgery attempts, and a brute-forcer has to send those anyway.
+              reject = "[lobby] that's not a room code — paste the 8-character code.";
+            }
+            else if (!nzVerifyRoomToken(c->m_wants_group_migration.Get(), tok))
+            {
+              c->m_bad_token_count++;
+              logText("PrivateMode - rejected invalid room token from '%s' (%d/%d)\n",
+                      c->m_username.Get(), c->m_bad_token_count, g_config_private_token_maxfail);
+              reject = "[lobby] invalid room code.";
+            }
+            else
+            {
+              // Canonical form becomes the room key, so "K7QM-2XA9" and
+              // "k7qm2xa9" resolve to the same room rather than two.
+              c->m_wants_group_migration.Set(tok);
+            }
+          }
+
+          if (reject)
+          {
+            c->m_wants_group_migration.Set("");
+            mpb_chat_message rejmsg;
+            rejmsg.parms[0]="MSG";
+            rejmsg.parms[1]="";
+            rejmsg.parms[2]=(char *)reject;
+            c->Send(rejmsg.build());
+          }
+          else
+          {
           pthread_mutex_lock(&g_groups_mutex);
 
           User_Group *ng = g_private_groups.Get(c->m_wants_group_migration.Get());
@@ -1245,6 +1384,7 @@ int main(int argc, char **argv)
           }
 
           pthread_mutex_unlock(&g_groups_mutex);
+          } // end of signed-token gate's else
         }
         rrchk++;
       }

@@ -117,7 +117,7 @@ static bool is_video_fourcc(unsigned int fourcc)
 
 User_Connection::User_Connection(JNL_IConnection *con, User_Group *grp) : m_auth_state(0), m_clientcaps(0), m_auth_privs(0), m_reserved(0), m_max_channels(0),
       m_vote_bpm(0), m_vote_bpm_lasttime(0), m_vote_bpi(0), m_vote_bpi_lasttime(0),
-      m_deferred_video_msg(NULL)
+      m_deferred_video_msg(NULL), m_bad_token_count(0)
 {
   m_netcon.attach(con);
 

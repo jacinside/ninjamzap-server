@@ -17,6 +17,27 @@ moves to `1.0.0`):
 - **PATCH** — bug fixes, observability improvements, dependency bumps
   that do not alter behaviour.
 
+## [Unreleased]
+
+### Added
+
+- **Signed room tokens for `PrivateGroupMode`** (`PrivateGroupTokenSecret`). When set,
+  a room name must be an 8-character Crockford Base32 code whose last 3 characters are a
+  truncated `HMAC-SHA1` of the first 5. Names that fail verification are refused, so only
+  the holder of the secret can mint names that create rooms — without it, any lobby
+  occupant can invent names and occupy the available room slots. Verification is
+  stateless; the server needs no link to whatever issues the codes. Codes are
+  case-insensitive and dashes are ignored, so `K7QM-2XA9` and `k7qm2xa9` resolve to the
+  same room instead of two.
+- **Join rate limit** (`PrivateGroupTokenMaxFail`, default 5). Caps how many well-formed
+  but incorrectly signed codes one connection may send before the server stops honouring
+  its join requests, forcing a reconnect. Input that isn't shaped like a code (ordinary
+  chat from a client unaware of rooms) is rejected with a hint and does not count against
+  the limit.
+
+Both directives are optional and off by default: with no secret configured, room naming
+behaves exactly as before.
+
 ## [0.1.0] — 2026-06-03
 
 First tagged release of the NinjamZap NINJAM server fork. Snapshot of
