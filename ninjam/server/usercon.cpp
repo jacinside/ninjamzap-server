@@ -514,7 +514,11 @@ int User_Connection::Run(User_Group *group, int *wantsleep, bool audio_only)
       {
         if (!m_lookup || !OnRunAuth(group))
         {
-          m_netcon.Run();
+          // Run() flushes the send queue, but it can also hand back a message
+          // it just received; that message arrives with no references, so the
+          // caller owns it and must release it or it leaks
+          Net_Message *r=m_netcon.Run();
+          if (r) delete r;
           m_netcon.Kill();
         }
         delete m_lookup;
@@ -534,7 +538,9 @@ int User_Connection::Run(User_Group *group, int *wantsleep, bool audio_only)
         bh.errmsg="authorization timeout";
         Send(bh.build());
 
-        m_netcon.Run();
+        // see above: Run() may hand back a received message
+        Net_Message *r=m_netcon.Run();
+        if (r) delete r;
         m_netcon.Kill();
       }
     }
@@ -564,7 +570,11 @@ int User_Connection::Run(User_Group *group, int *wantsleep, bool audio_only)
       logText("%s: Refusing user, %s\n",addrbuf,bh.errmsg);
 
       Send(bh.build());
-      m_netcon.Run();
+      // flush the refusal, and release anything Run() picks up off the wire:
+      // a client that follows a bad auth frame with a good one otherwise
+      // leaks a message per refused connection (pre-auth)
+      Net_Message *r=m_netcon.Run();
+      if (r) delete r;
 
       m_netcon.Kill();
       msg->releaseRef();
@@ -674,7 +684,20 @@ int User_Connection::Run(User_Group *group, int *wantsleep, bool audio_only)
               }
             }
 
-            if (mfmt_changes && !group->m_is_lobby_mode) group->Broadcast(mfmt.build(),this);
+            if (mfmt_changes)
+            {
+              // the build_add_rec() calls above always allocate the internal
+              // message, and mpb.h's contract is that build() is what takes it
+              // back (Broadcast consumes it). lobby mode never broadcasts, so
+              // discard it there instead of leaking it -- a client can repeat
+              // set_channel_info at will, so the leak was unbounded.
+              Net_Message *bmsg=mfmt.build();
+              if (bmsg)
+              {
+                if (!group->m_is_lobby_mode) group->Broadcast(bmsg,this);
+                else delete bmsg;
+              }
+            }
           }         
         }
       break;
