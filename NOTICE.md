@@ -62,7 +62,7 @@ All new code below is GPL v2 (matching upstream):
 | Thread-per-group | threading members in `usercon.h`, lifecycle in `ninjamsrv.cpp` | Optional per-room pthread when `PrivateGroupMode` is configured. Lobby stays on main thread. |
 | `RoomPassword` directive | config parsing in `ninjamsrv.cpp` | Per-room password enforcement. |
 | Signed room tokens | `PrivateGroupTokenSecret` / `PrivateGroupTokenMaxFail` in `ninjamsrv.cpp`, `usercon.cpp` | Only names signed with the operator's secret create private rooms; per-connection limit on bad codes. |
-| `AllowHiddenUsers` directive | user broadcast filter in `usercon.cpp` | Lets relay/recording bots connect without showing in user lists or counting in vote divisors. |
+| Hidden bot slot | (already in upstream as `AllowHiddenUsers`; production cfg enables it) | Lets relay/recording bots connect without showing in user lists or counting in vote divisors. Shared room passwords can't grant hidden status. |
 | Configurable anon channel cap | (already in upstream; production cfg sets it) | `MaxChannels 32 8` in production cfgs so anon users can run audio + video together. |
 | Container deploy | `Dockerfile`, `configs/`, `deploy.sh`, `fly.toml` | Fly.io / generic container deployment with secrets rendering. |
 | Documentation | `docs/VIDEO_SUPPORT.md`, `docs/PRIVATE_ROOMS.md`, `docs/NINJAM_AUTH.md`, `CHANGELOG.md` | Protocol and operator-facing reference docs. |
