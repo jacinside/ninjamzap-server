@@ -993,7 +993,7 @@ bool User_Connection::migrateToRoom(const char *p)
     char *c = (char *)m_wants_group_migration.Get();
     while (*c)
     {
-      if (*c == '\'' || *c == '\t' || *c == '\r' || *c == '\n') *c='_';
+      if (*c == '\'' || (unsigned char)*c < 0x20) *c='_'; // no control chars in room names
       c++;
     }
     return true;
@@ -1700,7 +1700,8 @@ void User_Group::onChatMessage(User_Connection *con, mpb_chat_message *msg)
 
       // send a privmsg back to sender, saying shit aint there
       WDL_String buf(pmatch == -2 ? "Username is ambiguous (specify partial IP): " : "No such user: ");
-      buf.Append(msg->parms[1]);          
+      buf.Append(msg->parms[1]);
+      sanitize_relay_text(buf.Get()); // the echoed name may carry control chars
       mpb_chat_message newmsg;
       newmsg.parms[0]="MSG";
       newmsg.parms[1]="";
