@@ -1,10 +1,10 @@
 # NinjamZap Server
 
-A fork of the [Cockos NINJAM](https://www.cockos.com/ninjam/) server that adds **real-time video channel support** alongside audio, plus a thread-per-group architecture for private rooms.
+A derivative of the [Cockos NINJAM](https://ninjam.com) server (GPL v2, Justin Frankel / Cockos) that adds **real-time video channel support** alongside audio, plus a thread-per-group architecture for private rooms.
 
 It powers the public NinjamZap rooms (`video.ninjamzap.com:2049`, `:2050`) used by the [NinjamZap mobile client](https://www.ninjamzap.com), and any standard NINJAM client (Reaper/ReaNINJAM, Jamtaba, etc.) can connect for the audio path.
 
-License: **GPL v2** — same as upstream NINJAM. See [LICENSE](LICENSE).
+License: **GPL v2** — same as upstream NINJAM. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md) for the file-by-file lineage of what came from upstream vs what was added in this fork.
 
 ---
 

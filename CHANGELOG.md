@@ -38,6 +38,27 @@ moves to `1.0.0`):
 Both directives are optional and off by default: with no secret configured, room naming
 behaves exactly as before.
 
+### Fixed
+
+From upstream NINJAM pull requests (original authorship kept in each commit):
+
+- **Message parsers** (`mpb.cpp`, justinfrankel/ninjam#25): names and chat parameters
+  without a terminator are refused instead of read past the end of the message; a
+  `set_channel_info` record with cut-short fields is refused; pan is read as the signed
+  byte it is on the wire. Before, a channel panned left was relayed to the other clients
+  as hard right (the parsed 128..255 value was clamped to 127 on rebuild).
+- **Control characters in relayed chat** (justinfrankel/ninjam#26): characters below
+  0x20 in relayed `MSG`, `PRIVMSG` and the topic are replaced with spaces, so one line
+  can't pose as several to clients or server-list scrapers.
+- **Message leaks** (justinfrankel/ninjam#27): messages received while refusing or timing
+  out a connection before auth, and channel-info broadcasts built in lobby mode, are freed.
+
+### Changed
+
+- Merged upstream NINJAM `main` up to `f4c0eff3` (2025-06-01): const-correct APIs,
+  locale-safe character classification in command parsing. `WDL/` updated to the version
+  that commit builds with (it was an older snapshot, unmodified).
+
 ## [0.1.0] — 2026-06-03
 
 First tagged release of the NinjamZap NINJAM server fork. Snapshot of
