@@ -4,7 +4,9 @@ ifdef MAC
 CFLAGS += -D_MAC
 LDFLAGS += -lpthread
 else
-CFLAGS += -pthread
+# WDL requires a signed plain char (wdltypes.h asserts it); it is unsigned by
+# default on arm64 and other non-x86 Linux targets
+CFLAGS += -pthread -fsigned-char
 endif
 
 CC=gcc
