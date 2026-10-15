@@ -24,6 +24,12 @@ AnonymousUsers no
 AllowHiddenUsers yes
 
 AllowVideoChannels yes
+
+# Fly.io's proxy hides the client address: without this every user shows the
+# proxy's private IP (no country, same @ip for all). fly.toml enables the
+# proxy_proto handler on this port, so each connection starts with a PROXY
+# protocol v1 line carrying the real address. Both must change together.
+ProxyProtocol yes
 SendBufferKB 4096
 RecvBufferKB 2048
 

@@ -158,6 +158,9 @@ class JNL_Connection JNL_Connection_PARENTDEF
     unsigned int get_interface(void);        // this returns the interface the connection is on
     unsigned int get_remote(void); // remote host ip.
     short get_remote_port(void); // this returns the remote port of connection
+    // Overrides the peer address, for a server behind a proxy that reports the
+    // real client address (PROXY protocol). addr is in network byte order.
+    void set_remote(unsigned int addr) { m_saddr->sin_addr.s_addr = addr; }
   
     void set_interface(int useInterface); // call before connect if needed
 

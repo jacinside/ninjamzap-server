@@ -21,6 +21,14 @@ moves to `1.0.0`):
 
 ### Added
 
+- **PROXY protocol v1** (`ProxyProtocol yes`, off by default). Behind a TCP proxy every
+  connection comes from the proxy's own address, so ACLs, logs and anonymous `@ip` names
+  all show the same private IP. With this on, each connection must start with a PROXY v1
+  line (`PROXY TCP4 <src> <dst> <sport> <dport>\r\n`); its source address replaces the
+  peer's before the connection is accepted. IPv4-mapped `TCP6` sources are used; native
+  IPv6 and `UNKNOWN` keep the proxy's address. A connection that sends anything else, or
+  no complete header within 10 seconds, is dropped. The deployed configs enable it together
+  with Fly.io's `proxy_proto` handler.
 - **Signed room tokens for `PrivateGroupMode`** (`PrivateGroupTokenSecret`). When set,
   a room name must be an 8-character Crockford Base32 code whose last 3 characters are a
   truncated `HMAC-SHA1` of the first 5. Names that fail verification are refused, so only

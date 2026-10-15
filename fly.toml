@@ -3,6 +3,9 @@ primary_region = 'dfw'
 
 [build]
 
+# Every port passes the client address in a PROXY protocol v1 line
+# (proxy_proto); the server configs set ProxyProtocol yes to read it.
+# Change both together, or every connection is refused.
 [[services]]
   internal_port = 2049
   protocol = 'tcp'
@@ -12,7 +15,8 @@ primary_region = 'dfw'
 
   [[services.ports]]
     port = 2049
-    handlers = []
+    handlers = ["proxy_proto"]
+    proxy_proto_options = { version = "v1" }
 
 [[services]]
   internal_port = 2050
@@ -23,7 +27,8 @@ primary_region = 'dfw'
 
   [[services.ports]]
     port = 2050
-    handlers = []
+    handlers = ["proxy_proto"]
+    proxy_proto_options = { version = "v1" }
 
 # Private (invite-only) server. AnonymousUsers no — admin + invite-issued
 # users only. Reserved range 2080+; public servers stay in 2049–2079.
@@ -39,7 +44,8 @@ primary_region = 'dfw'
 
   [[services.ports]]
     port = 2090
-    handlers = []
+    handlers = ["proxy_proto"]
+    proxy_proto_options = { version = "v1" }
 
 # Shared private-room server: many token-addressed rooms inside one process,
 # created on demand and disposed when empty. Room codes are HMAC-signed with
@@ -53,7 +59,8 @@ primary_region = 'dfw'
 
   [[services.ports]]
     port = 2091
-    handlers = []
+    handlers = ["proxy_proto"]
+    proxy_proto_options = { version = "v1" }
 
 # No health checks — NINJAM server treats health check TCP probes
 # as failed client connections, causing unnecessary log noise

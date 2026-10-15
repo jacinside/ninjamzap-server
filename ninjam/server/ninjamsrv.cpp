@@ -229,8 +229,9 @@ static bool nzVerifyRoomToken(const char *name, char *out /* NZ_TOKEN_LEN+1 */)
 WDL_String g_config_logpath;
 int g_config_log_sessionlen;
 
+bool g_config_proxy_protocol;          // expect a PROXY protocol v1 header on every connection (Fly.io proxy_proto)
 bool g_config_allow_video_channels;
-int g_config_video_transfer_timeout;    // seconds before stale video transfer is cleaned up (default 30)
+int g_config_video_transfer_timeout;   // seconds before stale video transfer is cleaned up (default 30)
 int g_config_video_congestion_pct;      // % of send queue that triggers video frame dropping (default 50)
 int g_config_send_buffer_kb;            // per-connection send buffer in KB (default 256)
 int g_config_recv_buffer_kb;            // per-connection recv buffer in KB (default 128)
@@ -676,6 +677,17 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
     }
     g_config_allow_video_channels=!!x;
   }
+  else if (!stricmp(t,"ProxyProtocol"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+
+    int x=lp->gettoken_enum(1,"no\0yes\0");
+    if (x <0)
+    {
+      return -2;
+    }
+    g_config_proxy_protocol=!!x;
+  }
   else if (!stricmp(t,"VideoTransferTimeout"))
   {
     if (lp->getnumtokens() != 2) return -1;
@@ -827,6 +839,7 @@ static int ReadConfig(char *configfile, bool is_init=false)
   g_default_bpm=120;
 
   g_config_log_sessionlen=10; // ten minute default, tho the user will need to specify the path anyway
+  g_config_proxy_protocol=false;
   g_config_allow_video_channels=false;
   g_config_video_transfer_timeout=30;
   g_config_video_congestion_pct=50;
@@ -945,6 +958,102 @@ void enforceACL(User_Group *group)
     }
   }
   if (killcnt) logText("killed %d users by enforcing ACL\n",killcnt);
+}
+
+static void acceptConnection(JNL_IConnection *con)
+{
+  char str[512];
+  int flag=aclGet(con->get_remote());
+  JNL::addr_to_ipstr(con->get_remote(),str,sizeof(str));
+  logText("Incoming connection from %s!\n",str);
+
+  if (flag == ACL_FLAG_DENY)
+  {
+    logText("Denying connection (via ACL)\n");
+    delete con;
+  }
+  else
+  {
+    m_group->AddConnection(con,flag == ACL_FLAG_RESERVE);
+  }
+}
+
+// ProxyProtocol: behind Fly.io's proxy every connection arrives from the proxy's
+// private address. With the proxy_proto handler the proxy first sends a PROXY
+// protocol v1 line carrying the real client address; until that line is read
+// the connection waits here, so ACLs, logs and the @ip users see the real peer.
+struct PendingProxyCon
+{
+  JNL_IConnection *con;
+  time_t start;
+};
+static WDL_TypedBuf<PendingProxyCon> g_proxy_pending;
+#define PROXY_HEADER_TIMEOUT 10 // seconds
+
+// "PROXY TCP4 <src> <dst> <srcport> <dstport>\r\n", at most 107 bytes.
+// Returns 1 when the line was consumed (*addr = client address in network byte
+// order, or 0 when it names none we can store: UNKNOWN, a native IPv6 peer),
+// 0 when more bytes are needed, -1 when this is not a PROXY v1 header.
+static int readProxyHeader(JNL_IConnection *con, unsigned int *addr)
+{
+  char buf[108];
+  int n = con->peek_bytes(buf, sizeof(buf) - 1);
+  if (n <= 0) return 0;
+  buf[n] = 0;
+  if (strncmp(buf, "PROXY ", n < 6 ? n : 6)) return -1;
+  char *eol = strstr(buf, "\r\n");
+  if (!eol) return n >= (int)sizeof(buf) - 1 ? -1 : 0;
+  *eol = 0;
+
+  char skip[108];
+  con->recv_bytes(skip, (int)(eol - buf) + 2);
+
+  *addr = 0;
+  char proto[8], src[64];
+  if (sscanf(buf + 6, "%7s %63s", proto, src) != 2) return 1; // "PROXY UNKNOWN"
+  const char *v4 = src;
+  if (!strcmp(proto, "TCP6"))
+  {
+    if (strncasecmp(src, "::ffff:", 7)) return 1;
+    v4 = src + 7; // IPv4-mapped
+  }
+  else if (strcmp(proto, "TCP4")) return 1;
+  unsigned int a = inet_addr(v4);
+  if (a != INADDR_NONE) *addr = a;
+  return 1;
+}
+
+static void runProxyPending()
+{
+  time_t now = time(NULL);
+  for (int x = g_proxy_pending.GetSize() - 1; x >= 0; x--)
+  {
+    PendingProxyCon *p = g_proxy_pending.Get() + x;
+    JNL_IConnection *con = p->con;
+    con->run();
+
+    unsigned int addr = 0;
+    int st = con->get_state();
+    int r = (st == JNL_Connection::STATE_ERROR || st == JNL_Connection::STATE_CLOSED) ? -2 : readProxyHeader(con, &addr);
+    if (r == 0 && now - p->start < PROXY_HEADER_TIMEOUT) continue;
+
+    g_proxy_pending.Delete(x);
+    if (r == 1)
+    {
+      if (addr) static_cast<JNL_Connection *>(con)->set_remote(addr); // JNL_Listen only creates JNL_Connection
+      acceptConnection(con);
+    }
+    else
+    {
+      if (r != -2)
+      {
+        char str[512];
+        JNL::addr_to_ipstr(con->get_remote(),str,sizeof(str));
+        logText("Dropping connection from %s: %s\n",str, r < 0 ? "no PROXY protocol header" : "PROXY protocol header timed out");
+      }
+      delete con;
+    }
+  }
 }
 
 
@@ -1238,23 +1347,16 @@ int main(int argc, char **argv)
     while (!g_done)
     {
       JNL_IConnection *con=m_listener->get_connect(g_config_send_buffer_kb*1024, g_config_recv_buffer_kb*1024);
-      if (con) 
+      if (con)
       {
-        char str[512];
-        int flag=aclGet(con->get_remote());
-        JNL::addr_to_ipstr(con->get_remote(),str,sizeof(str));
-        logText("Incoming connection from %s!\n",str);
-
-        if (flag == ACL_FLAG_DENY)
+        if (g_config_proxy_protocol)
         {
-          logText("Denying connection (via ACL)\n");
-          delete con;
+          PendingProxyCon p = { con, time(NULL) };
+          g_proxy_pending.Add(p);
         }
-        else
-        {
-          m_group->AddConnection(con,flag == ACL_FLAG_RESERVE);
-        }
+        else acceptConnection(con);
       }
+      if (g_proxy_pending.GetSize()) runProxyPending();
 
       int can_idle = m_group->Run();
 
