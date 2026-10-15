@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: Build + smoke (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-24.04
+          - arch: arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ninjamsrv
+        run: make -C ninjam/server
+      - name: Smoke test (anonymous login, PROXY protocol)
+        run: python3 tests/smoke.py binary ninjam/server/ninjamsrv
+
+  image:
+    name: Deploy image boots all servers
+    runs-on: ubuntu-24.04
+    env:
+      # Throwaway values: the entrypoint refuses to start without every secret.
+      STATUS_USER: ci-status
+      STATUS_PASS: ci-status-pass
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t ninjamzap-server:ci .
+      - name: Start container
+        run: |
+          docker run -d --name njz \
+            -p 2049:2049 -p 2050:2050 -p 2090:2090 -p 2091:2091 \
+            -e STATUS_USER -e STATUS_PASS \
+            -e BOT_PASS=ci -e PRIVATE_ADMIN_USER=ci-admin -e PRIVATE_ADMIN_PASS=ci \
+            -e ROOM_INVITE_PASS=ci -e ROOM_TOKEN_SECRET=ci-token-secret \
+            ninjamzap-server:ci
+      - name: Log in on every port
+        run: python3 tests/smoke.py image 127.0.0.1 "$STATUS_USER" "$STATUS_PASS" 2049 2050 2090 2091
+      - name: Container still running
+        run: test "$(docker inspect -f '{{.State.Running}}' njz)" = true
+      - name: Container logs
+        if: always()
+        run: docker logs njz 2>&1 | tail -100
