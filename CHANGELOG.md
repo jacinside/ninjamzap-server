@@ -42,6 +42,15 @@ moves to `1.0.0`):
   its join requests, forcing a reconnect. Input that isn't shaped like a code (ordinary
   chat from a client unaware of rooms) is rejected with a hint and does not count against
   the limit.
+- **Retired room codes** (`PrivateGroupRevokedCodesFile <path>`, off by default). A signed
+  code verifies forever, so replacing a room's code or deleting the room locked nobody
+  out. The file lists retired codes as keyed fingerprints — hex of the first 8 bytes of
+  `HMAC-SHA1(secret, "revoked:" + code)` — under the header line
+  `# ninjamzap revoked room codes v1`. The server re-reads it within 5 seconds of a
+  change, refuses those codes in the lobby (without counting them against
+  `PrivateGroupTokenMaxFail`), and tells everyone in a room opened with one why, then
+  disconnects them. A missing file revokes nothing; a file without the header is ignored.
+  The deploy image polls the list from the backend every 30 seconds (`REVOKED_CODES_URL`).
 
 Both directives are optional and off by default: with no secret configured, room naming
 behaves exactly as before.

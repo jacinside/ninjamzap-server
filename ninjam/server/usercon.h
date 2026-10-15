@@ -148,6 +148,12 @@ class User_Group
     bool m_thread_running;
     volatile bool m_thread_stop;
 
+    // NinjamZap: set by the main thread when this room's code is retired (see
+    // PrivateGroupRevokedCodesFile). The room thread tells everyone, then
+    // disconnects them, and the emptied room is disposed like any other.
+    volatile bool m_revoked;
+    time_t m_revoked_at; // room-thread only: when the notice went out
+
     // Connection handoff (main thread → group thread)
     pthread_mutex_t m_migration_mutex;
     std::deque<PendingMigration> m_pending_migrations;
@@ -155,6 +161,7 @@ class User_Group
     static void *ThreadFunc(void *arg);
     void ThreadRun();
     void ProcessPendingMigrations();
+    void DrainRevokedRoom();
     void QueueMigration(User_Connection *con);
 
 #ifdef _WIN32

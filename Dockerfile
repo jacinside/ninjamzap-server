@@ -14,8 +14,9 @@ RUN make clean 2>/dev/null; make
 # --- Runtime stage ---
 FROM debian:bookworm-slim
 
+# curl + CA certificates: the entrypoint polls the backend for retired room codes.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    coreutils \
+    coreutils curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/ninjam

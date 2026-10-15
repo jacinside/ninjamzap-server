@@ -1005,7 +1005,7 @@ bool User_Connection::migrateToRoom(const char *p)
 User_Group::User_Group() : m_max_users(0), m_last_bpm(120), m_last_bpi(32), m_keepalive(0),
   m_voting_threshold(110), m_voting_timeout(120),
   m_loopcnt(0), m_run_robin(0), m_allow_hidden_users(0), m_is_lobby_mode(0),
-  m_thread_running(false), m_thread_stop(false)
+  m_thread_running(false), m_thread_stop(false), m_revoked(false), m_revoked_at(0)
 
 {
   m_logfp = NULL;
@@ -1916,6 +1916,8 @@ void User_Group::ThreadRun()
   {
     ProcessPendingMigrations();
 
+    if (m_revoked) DrainRevokedRoom();
+
     int can_idle = Run();
 
     if (can_idle)
@@ -1924,6 +1926,27 @@ void User_Group::ThreadRun()
       nanosleep(&ts, NULL);
     }
   }
+}
+
+// The room's code was retired (regenerated or the room deleted). Say why first
+// and give the notice a moment to go out, then disconnect everyone — including
+// anyone who migrated in after the notice. Clients that reconnect land in the
+// lobby, where the old code is now refused.
+void User_Group::DrainRevokedRoom()
+{
+  const time_t now = time(NULL);
+  if (!m_revoked_at)
+  {
+    m_revoked_at = now;
+    mpb_chat_message msg;
+    msg.parms[0]="MSG";
+    msg.parms[1]="";
+    msg.parms[2]=(char *)"[room] this room's code was changed or the room was deleted. Ask the owner for the new link.";
+    Broadcast(msg.build());
+    return;
+  }
+  if (now - m_revoked_at < 2) return;
+  for (int x = 0; x < m_users.GetSize(); x ++) m_users.Get(x)->m_netcon.Kill();
 }
 
 void User_Group::QueueMigration(User_Connection *con)

@@ -38,6 +38,8 @@
 #endif
 #include <signal.h>
 #include <stdarg.h>
+#include <ctype.h>
+#include <sys/stat.h>
 
 #include "../../WDL/jnetlib/jnetlib.h"
 #include "../../WDL/jnetlib/httpget.h"
@@ -226,6 +228,96 @@ static bool nzVerifyRoomToken(const char *name, char *out /* NZ_TOKEN_LEN+1 */)
   for (int i = 0; i < NZ_TOKEN_MACLEN; i++) diff |= (out[paylen + i] ^ want[i]);
   return diff == 0;
 }
+// NinjamZap extension: retired room codes. A signed code stays valid forever as
+// far as nzVerifyRoomToken can tell, so regenerating a room's code or deleting the
+// room would otherwise lock nobody out. The backend publishes every retired code
+// as a keyed fingerprint (never the code); a poller next to us writes that list to
+// this file, and we re-read it whenever it changes. Codes in it are refused in the
+// lobby, and a room open under one is emptied. Missing file == nothing revoked
+// (fail open: a backend outage must not lock bands out of their rooms).
+WDL_FastString g_config_private_revoked_file;
+static WDL_StringKeyedArray<bool> g_revoked_fps(false);
+static time_t g_revoked_mtime;
+static off_t g_revoked_size = -1;
+#define NZ_REVOKED_HEADER "# ninjamzap revoked room codes v1"
+#define NZ_FP_HEXLEN 16
+
+// Hex of the first 8 bytes of HMAC-SHA1(secret, "revoked:" + canonical code).
+// MUST match revokedFingerprint() in hs-backend's room-token.ts.
+static void nzRevokedFingerprint(const char *tok, char *out /* NZ_FP_HEXLEN+1 */)
+{
+  char msg[8 + NZ_TOKEN_LEN + 1];
+  snprintf(msg, sizeof(msg), "revoked:%s", tok);
+  unsigned char mac[WDL_SHA1SIZE];
+  nzHmacSha1(g_config_private_token_secret.Get(), msg, (int) strlen(msg), mac);
+  for (int i = 0; i < NZ_FP_HEXLEN / 2; i++) snprintf(out + i * 2, 3, "%02x", mac[i]);
+}
+
+static bool nzIsRevoked(const char *tok)
+{
+  if (!g_revoked_fps.GetSize()) return false;
+  char fp[NZ_FP_HEXLEN + 1];
+  nzRevokedFingerprint(tok, fp);
+  return g_revoked_fps.Get(fp);
+}
+
+// Re-reads the revoked list if the file changed, then flags every open room whose
+// code is in it. Main thread only. A file without the header is ignored rather
+// than trusted, so a half-written or garbage file never clears the list.
+static void nzReloadRevokedCodes()
+{
+  if (!g_config_private_revoked_file.GetLength() || !g_config_private_token_secret.GetLength()) return;
+
+  struct stat st;
+  if (stat(g_config_private_revoked_file.Get(), &st)) return; // not written yet: keep what we have
+  if (st.st_mtime == g_revoked_mtime && st.st_size == g_revoked_size) return;
+
+  FILE *fp = fopen(g_config_private_revoked_file.Get(), "rt");
+  if (!fp) return;
+  g_revoked_mtime = st.st_mtime;
+  g_revoked_size = st.st_size;
+
+  char line[256];
+  if (!fgets(line, sizeof(line), fp) || strncmp(line, NZ_REVOKED_HEADER, strlen(NZ_REVOKED_HEADER)))
+  {
+    fclose(fp);
+    logText("PrivateMode - ignoring revoked-codes file without its header\n");
+    return;
+  }
+  WDL_StringKeyedArray<bool> next(false);
+  while (fgets(line, sizeof(line), fp))
+  {
+    int n = 0;
+    while (isxdigit((unsigned char) line[n])) { line[n] = tolower(line[n]); n++; }
+    if (n == NZ_FP_HEXLEN) { line[n] = 0; next.AddUnsorted(line, true); }
+  }
+  fclose(fp);
+  next.Resort();
+
+  g_revoked_fps.DeleteAll();
+  for (int i = 0; i < next.GetSize(); i++)
+  {
+    const char *k = NULL;
+    next.Enumerate(i, &k);
+    g_revoked_fps.AddUnsorted(k, true);
+  }
+  g_revoked_fps.Resort();
+  logText("PrivateMode - %d revoked room code%s loaded\n", g_revoked_fps.GetSize(), g_revoked_fps.GetSize() == 1 ? "" : "s");
+
+  pthread_mutex_lock(&g_groups_mutex);
+  for (int x = 0; x < g_private_groups.GetSize(); x ++)
+  {
+    const char *nm = NULL;
+    User_Group *g = g_private_groups.Enumerate(x, &nm);
+    if (g && nm && !g->m_revoked && nzIsRevoked(nm))
+    {
+      logText("PrivateMode - room '%s' uses a revoked code, closing it\n", nm);
+      g->m_revoked = true;
+    }
+  }
+  pthread_mutex_unlock(&g_groups_mutex);
+}
+
 WDL_String g_config_logpath;
 int g_config_log_sessionlen;
 
@@ -802,6 +894,12 @@ static int ConfigOnToken(LineParser *lp, bool is_init)
     if (lp->getnumtokens() != 2) return -1;
     g_config_private_token_secret.Set(lp->gettoken_str(1));
   }
+  else if (!stricmp(t,"PrivateGroupRevokedCodesFile"))
+  {
+    if (lp->getnumtokens() != 2) return -1;
+    g_config_private_revoked_file.Set(lp->gettoken_str(1));
+    g_revoked_mtime = 0; g_revoked_size = -1; // re-read on the next check
+  }
   else if (!stricmp(t,"PrivateGroupTokenMaxFail"))
   {
     if (lp->getnumtokens() != 2) return -1;
@@ -1360,6 +1458,16 @@ int main(int argc, char **argv)
 
       int can_idle = m_group->Run();
 
+      {
+        static time_t last_revoked_check;
+        const time_t now = time(NULL);
+        if (now - last_revoked_check >= 5)
+        {
+          last_revoked_check = now;
+          nzReloadRevokedCodes();
+        }
+      }
+
       // only check one lobby-user per cycle to see if we need to move them to a room.
       // if this is too slow we could do a few per cycle but no need to do all of them
       {
@@ -1396,6 +1504,13 @@ int main(int argc, char **argv)
               logText("PrivateMode - rejected invalid room token from '%s' (%d/%d)\n",
                       c->m_username.Get(), c->m_bad_token_count, g_config_private_token_maxfail);
               reject = "[lobby] invalid room code.";
+            }
+            else if (nzIsRevoked(tok))
+            {
+              // A genuine code the owner has since replaced or deleted — not a
+              // forgery, so it doesn't count against PrivateGroupTokenMaxFail.
+              logText("PrivateMode - refused revoked room code from '%s'\n", c->m_username.Get());
+              reject = "[lobby] this room code is no longer valid. Ask the room's owner for the new link.";
             }
             else
             {

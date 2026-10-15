@@ -69,9 +69,16 @@ PrivateGroupPublicPrefix ""
 # ─── Signed room codes ──────────────────────────────────────────────────
 # Room names must be 8-character Crockford Base32 codes carrying a truncated
 # HMAC-SHA1 of their own payload. Without this, any lobby occupant could invent
-# names and occupy all the slots. Verification is stateless — the server never
-# talks to whatever issues the codes.
+# names and occupy all the slots. Verifying a signature needs no state, which is
+# also why it can't tell a retired code from a live one — see below.
 PrivateGroupTokenSecret ${ROOM_TOKEN_SECRET}
+
+# Codes the owner has since regenerated, or whose room was deleted, still carry
+# a valid signature. The entrypoint polls the backend's list of them (keyed
+# fingerprints, never the codes) into this file every 30 s; the server re-reads
+# it when it changes, refuses those codes in the lobby and empties any room
+# still open under one. No file yet ⇒ nothing is revoked.
+PrivateGroupRevokedCodesFile /opt/ninjam/revoked-codes.txt
 
 # Well-formed but wrongly signed codes tolerated per connection before we stop
 # serving it (forcing a reconnect). This rate limit is what keeps the short
