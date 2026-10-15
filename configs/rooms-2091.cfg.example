@@ -14,7 +14,7 @@ Port 2091
 
 # Per-ROOM limits (the lobby has its own cap, see PrivateGroupLobbySize).
 MaxUsers 8
-MaxChannels 32 8
+MaxChannels 32 9
 
 ServerLicense cclicense.txt
 

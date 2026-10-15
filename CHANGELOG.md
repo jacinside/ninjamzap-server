@@ -55,6 +55,10 @@ moves to `1.0.0`):
 Both directives are optional and off by default: with no secret configured, room naming
 behaves exactly as before.
 
+- **Load test** (`tests/load.py`): rooms of clients that join with signed codes and upload
+  audio and video at real bitrates and write sizes, reporting relayed versus expected
+  throughput, relay delay and the server's CPU.
+
 ### Fixed
 
 From upstream NINJAM pull requests (original authorship kept in each commit):
@@ -71,6 +75,10 @@ From upstream NINJAM pull requests (original authorship kept in each commit):
   out a connection before auth, and channel-info broadcasts built in lobby mode, are freed.
 
 ### Changed
+
+- The private configs (`rooms-2091`, `private-2090`) allow 9 channels per anonymous user,
+  like the public ones: 8 audio channels plus video. With 8, a user sending video had only
+  7 audio channels.
 
 - Merged upstream NINJAM `main` up to `f4c0eff3` (2025-06-01): const-correct APIs,
   locale-safe character classification in command parsing. `WDL/` updated to the version
