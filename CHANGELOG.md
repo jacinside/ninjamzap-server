@@ -76,6 +76,11 @@ From upstream NINJAM pull requests (original authorship kept in each commit):
 
 ### Changed
 
+- Public rooms (`default.cfg`, `default-2050.cfg`): back to `MaxUsers 6`, and the bot's
+  user line is `CHR`. A hidden (`H`) user never counted toward `MaxUsers`, so `MaxUsers 7`
+  let 7 musicians in; but a hidden user is still refused when the room is full, so the bot
+  missed full rooms. `R` lets it in past the cap without taking a musician's place.
+
 - The private configs (`rooms-2091`, `private-2090`) allow 9 channels per anonymous user,
   like the public ones: 8 audio channels plus video. With 8, a user sending video had only
   7 audio channels.

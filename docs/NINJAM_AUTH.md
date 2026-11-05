@@ -162,10 +162,14 @@ ACLs don't carry credentials; they're a pre-auth network filter only.
   room names. (You're trading password security for obscurity, so
   anyone who guesses or leaks the room name can join.)
 - Want a bot that doesn't take a slot? Give it a `User` entry with
-  `H` (hidden) and set `AllowHiddenUsers yes`. Hidden users are also
+  `H` (hidden). `H` alone keeps it out of the user list, the slot cap
+  and `USERCOUNT`; `AllowHiddenUsers yes` is not needed for that (it
+  hides every user without channels). A hidden user is still refused
+  when the room is full, so add `R` (reserved) if the bot must get in
+  anyway. Its JOIN/PART still show in the chat. Hidden users are also
   **excluded from the vote divisor** (`usercon.cpp:1492`:
   `if (!(p->m_auth_privs & PRIV_HIDDEN)) vucnt++;`), so a bot won't
   skew BPM/BPI quorum. Combine with `C` (chat) if the bot needs to
   post status messages; deliberately omit `V` so it can't `!vote` at
   all. This is how the NinjamZap audio-relay/recording bot
-  (`ninjamzapbot`) connects to the public 2049/2050 rooms.
+  (`ninjamzapbot`, flags `CHR`) connects to the public 2049/2050 rooms.

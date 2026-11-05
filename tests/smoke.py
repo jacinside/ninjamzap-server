@@ -3,8 +3,10 @@
 
   smoke.py binary <path-to-ninjamsrv>
       Starts the binary with throwaway configs and checks anonymous logins,
-      with and without ProxyProtocol, and private-room codes: signed codes
-      join, retired ones are refused and close the room they opened.
+      with and without ProxyProtocol, private-room codes (signed codes
+      join, retired ones are refused and close the room they opened), and
+      the public rooms' bot slot: with the deployed configs the bot never
+      takes a musician's place and still gets into a full room.
 
   smoke.py image <host> <user> <pass> <port> [<port> ...]
       Logs in as the status user on each port of a running container (the
@@ -173,6 +175,99 @@ def run_binary(binary):
             proc.wait(10)
 
         run_rooms(binary, workdir)
+        for cfg in ("default.cfg", "default-2050.cfg"):
+            run_bot_slot(binary, workdir, cfg)
+
+
+# ── Public rooms: the bot's slot ───────────────────────────────────────────
+CONFIGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "configs")
+BOT_PASS = "smoke-bot-pass"
+
+
+def start_deployed(binary, workdir, cfg_name):
+    """Starts the binary with a deployed public-room config: same MaxUsers,
+    AllowHiddenUsers and bot user line, minus what needs the container
+    (PROXY line from Fly, license/MOTD files, the status secret)."""
+    port = free_port()
+    lines = []
+    max_users = None
+    for line in open(os.path.join(CONFIGS, cfg_name)):
+        key = line.split(" ", 1)[0]
+        if key in ("ServerLicense", "MOTDFile", "StatusUserPass"):
+            continue
+        if key == "Port":
+            line = f"Port {port}\n"
+        elif key == "ProxyProtocol":
+            line = "ProxyProtocol no\n"
+        elif key == "MaxUsers":
+            max_users = int(line.split()[1])
+        lines.append(line.replace("${BOT_PASS}", BOT_PASS))
+    cfg = os.path.join(workdir, "bot-" + cfg_name)
+    with open(cfg, "w") as f:
+        f.writelines(lines)
+    log = open(os.path.join(workdir, "bot-" + cfg_name + ".log"), "w")
+    proc = subprocess.Popen([binary, cfg], stdout=log, stderr=subprocess.STDOUT)
+    if not wait_listening(port, proc):
+        proc.kill()
+        sys.exit(f"ninjamsrv did not start with {cfg_name}; see {log.name}")
+    return proc, port, max_users
+
+
+def run_bot_slot(binary, workdir, cfg_name):
+    host = "127.0.0.1"
+
+    def fill(port, count, prefix):
+        conns = []
+        for i in range(count):
+            name, c = login(host, port, f"anonymous:{prefix}{i}", keep=True)
+            if not name:
+                c.close()
+                break
+            keep_alive(c)
+            conns.append(c)
+        return conns
+
+    def join(port, user, password=""):
+        name, c = login(host, port, user, password, keep=True)
+        if not name:
+            c.close()
+            return None
+        keep_alive(c)
+        return c
+
+    # The bot is in first: it must not take one of the MaxUsers places.
+    proc, port, max_users = start_deployed(binary, workdir, cfg_name)
+    conns = []
+    try:
+        bot = join(port, "ninjamzapbot", BOT_PASS)
+        check(f"{cfg_name}: bot logs in", bot is not None)
+        conns = ([bot] if bot else []) + fill(port, max_users, "m")
+        check(f"{cfg_name}: {max_users} musicians fit with the bot in",
+              len(conns) - 1 == max_users, f"{len(conns) - 1} accepted")
+        extra = join(port, "anonymous:extra")
+        check(f"{cfg_name}: musician {max_users + 1} is refused", extra is None)
+        if extra:
+            extra.close()
+    finally:
+        for c in conns:
+            c.close()
+        proc.terminate()
+        proc.wait(10)
+
+    # The room is full before the bot arrives: it still gets in.
+    proc, port, max_users = start_deployed(binary, workdir, cfg_name)
+    conns = []
+    try:
+        conns = fill(port, max_users, "m")
+        bot = join(port, "ninjamzapbot", BOT_PASS)
+        check(f"{cfg_name}: bot gets into a full room", bot is not None)
+        if bot:
+            conns.append(bot)
+    finally:
+        for c in conns:
+            c.close()
+        proc.terminate()
+        proc.wait(10)
 
 
 # ── Private rooms ──────────────────────────────────────────────────────────

@@ -93,11 +93,11 @@ RoomPassword ${ROOM_INVITE_PASS} CV
 # ─── Optional: audio-relay / recording bot ─────────────────────────────
 #
 # Uncomment to let the ninjamzapbot join this room. Same flag set as the
-# public rooms (CH = chat + hidden, no vote, no moderation). Uses the
+# public rooms (CHR = chat + hidden + reserved, no vote, no moderation). Uses the
 # same BOT_PASS Fly secret as the public rooms — the bot only needs one
 # password to reach any NinjamZap server.
 #
-# User ninjamzapbot ${BOT_PASS} CH
+# User ninjamzapbot ${BOT_PASS} CHR
 #
 # Invite-redeemed users get one-off accounts written here by the backend
 # at provisioning time (or, eventually, by a SIGHUP-reload helper). Each

@@ -136,7 +136,7 @@ All six secrets are required — `entrypoint.sh` errors out fast if any
 is missing. The same `STATUS_USER` / `STATUS_PASS` pair is used across
 all three rooms (the `hs-backend` status probe only needs one
 credential). `BOT_PASS` is consumed by the public 2049/2050 rooms (the
-bot connects with flag `CH` — chat + hidden) and optionally by 2090
+bot connects with flags `CHR` — chat + hidden + reserved) and optionally by 2090
 (commented-out by default in the template).
 
 Order matters: `flyctl secrets set` alone restarts the machines with
